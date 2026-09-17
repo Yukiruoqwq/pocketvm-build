@@ -2,6 +2,11 @@ name: Build PocketVM
 
 on:
   workflow_dispatch:
+    inputs:
+      build_runtime:
+        description: "Rebuild the QEMU runtime from UTM's sources instead of using the release asset"
+        type: boolean
+        default: false
   push:
     branches: [main]
 
@@ -34,13 +39,12 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      # A failure here is not fatal: the fallback below rebuilds the same thing
-      # from source. Whether it succeeded is recorded as a file rather than read
-      # back from a step outcome, because that is the one form of the answer
-      # that cannot be misread.
+      # The runtime is a release asset in this repository: see the release named
+      # runtime-1. Rebuilding it is a deliberate choice, not a fallback, because
+      # it costs roughly forty minutes of runner time and nothing about it
+      # changes when the app does.
       - name: Fetch prebuilt runtime
-        id: runtime
-        continue-on-error: true
+        if: ${{ !inputs.build_runtime }}
         run: |
           set -euo pipefail
           curl -fsSL "$RUNTIME_URL" -o "$RUNNER_TEMP/runtime.tar.gz"
@@ -50,10 +54,9 @@ jobs:
           test -f Dependencies/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu
           test -f Dependencies/qemu/edk2-aarch64-code.fd
           du -sh Dependencies
-          touch Dependencies/.prebuilt-runtime
 
       - name: Build tools
-        if: always() && hashFiles('Dependencies/.prebuilt-runtime') == ''
+        if: ${{ inputs.build_runtime }}
         run: |
           brew install xcodegen bison pkg-config gettext glib-utils libgpg-error \
             nasm make meson cmake llvm spirv-llvm-translator libxcb libxrandr
@@ -63,7 +66,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.build-python/bin" >> "$GITHUB_PATH"
 
       - name: Build dependency sysroot from source
-        if: always() && hashFiles('Dependencies/.prebuilt-runtime') == ''
+        if: ${{ inputs.build_runtime }}
         run: |
           set -o pipefail
           git clone --filter=blob:none --no-checkout https://github.com/utmapp/UTM.git utm-src
