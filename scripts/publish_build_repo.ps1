@@ -41,8 +41,8 @@ try {
     git config user.name "PocketVM build mirror"
     git config user.email "pocketvm@localhost"
 
-    $remote = (git ls-remote --heads origin $Branch) 2>$null
-    if ($remote) {
+    $remoteHead = (git ls-remote --heads origin $Branch) 2>$null
+    if ($remoteHead) {
         git fetch --quiet origin $Branch
         git checkout --quiet -B $Branch "origin/$Branch"
         if ($LASTEXITCODE -ne 0) { throw "Could not check out $Branch from $Remote" }

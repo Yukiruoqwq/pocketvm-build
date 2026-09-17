@@ -34,17 +34,12 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
-      - uses: actions/cache/restore@v4
-        id: runtime-cache
-        with:
-          path: Dependencies
-          key: pocketvm-runtime-ios-arm64-${{ env.UTM_COMMIT }}-v1
-
-      # A miss is not an error: the download is a shortcut, and the fallback
-      # below rebuilds the same thing from source.
+      # A failure here is not fatal: the fallback below rebuilds the same thing
+      # from source. Whether it succeeded is recorded as a file rather than read
+      # back from a step outcome, because that is the one form of the answer
+      # that cannot be misread.
       - name: Fetch prebuilt runtime
         id: runtime
-        if: steps.runtime-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -55,15 +50,10 @@ jobs:
           test -f Dependencies/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu
           test -f Dependencies/qemu/edk2-aarch64-code.fd
           du -sh Dependencies
-
-      - uses: actions/cache/save@v4
-        if: steps.runtime.outcome == 'success'
-        with:
-          path: Dependencies
-          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+          touch Dependencies/.prebuilt-runtime
 
       - name: Build tools
-        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.runtime.outcome != 'success'
+        if: always() && hashFiles('Dependencies/.prebuilt-runtime') == ''
         run: |
           brew install xcodegen bison pkg-config gettext glib-utils libgpg-error \
             nasm make meson cmake llvm spirv-llvm-translator libxcb libxrandr
@@ -73,7 +63,7 @@ jobs:
           echo "$GITHUB_WORKSPACE/.build-python/bin" >> "$GITHUB_PATH"
 
       - name: Build dependency sysroot from source
-        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.runtime.outcome != 'success'
+        if: always() && hashFiles('Dependencies/.prebuilt-runtime') == ''
         run: |
           set -o pipefail
           git clone --filter=blob:none --no-checkout https://github.com/utmapp/UTM.git utm-src
@@ -82,8 +72,10 @@ jobs:
           ./scripts/build_dependencies.sh -p ios -a arm64 2>&1 | tee ../dependencies.log
           mv sysroot-iOS-arm64 ..
           cd ..
-          node scripts/slim_runtime.mjs "$PWD/sysroot-iOS-arm64/UTM.app" "$PWD/Dependencies" \
-            || bash scripts/prepare_dependencies.sh "$PWD/sysroot-iOS-arm64"
+          # The dependency build lays the frameworks out as a sysroot, not as an
+          # application bundle, so it is copied whole: slim_runtime.mjs prunes an
+          # app bundle and would have to grow a second code path to do this one.
+          bash scripts/prepare_dependencies.sh "$PWD/sysroot-iOS-arm64"
 
       - name: Generate Xcode project
         run: |
