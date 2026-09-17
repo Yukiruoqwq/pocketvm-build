@@ -1,0 +1,66 @@
+name: PocketVM
+options:
+  bundleIdPrefix: com.pocketvm
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGN_IDENTITY: ""
+targets:
+  PocketVM:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # Shipped as a folder so the bundle keeps web/index.html next to its
+      # assets; the web view loads it from disk with read access to that
+      # directory only.
+      - path: web
+        type: folder
+        buildPhase: resources
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: PocketVM
+        CFBundleShortVersionString: "0.1"
+        CFBundleVersion: "1"
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UILaunchScreen: {}
+        UIRequiredDeviceCapabilities:
+          - arm64
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.pocketvm.app
+        TARGETED_DEVICE_FAMILY: "2"
+        ARCHS: arm64
+    postBuildScripts:
+      - name: Assemble QEMU runtime
+        script: |
+          set -euo pipefail
+          # Frameworks/ and qemu/ are produced by scripts/prepare_dependencies.sh
+          # from the dependency sysroot. They sit next to the app binary so the
+          # @rpath install names resolved by the dependency build keep working.
+          FRAMEWORKS_SRC="${SRCROOT}/Dependencies/Frameworks"
+          FIRMWARE_SRC="${SRCROOT}/Dependencies/qemu"
+          DEST_APP="${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}"
+          if [ ! -d "$FRAMEWORKS_SRC" ]; then
+            echo "error: $FRAMEWORKS_SRC missing; run scripts/prepare_dependencies.sh first" >&2
+            exit 1
+          fi
+          mkdir -p "${DEST_APP}/Frameworks"
+          rsync -a --delete "${FRAMEWORKS_SRC}/" "${DEST_APP}/Frameworks/"
+          if [ -d "$FIRMWARE_SRC" ]; then
+            rsync -a --delete "${FIRMWARE_SRC}/" "${DEST_APP}/qemu/"
+          fi
+          echo "Embedded $(ls -1 "${DEST_APP}/Frameworks" | wc -l) framework(s)"

@@ -1,0 +1,130 @@
+name: Build PocketVM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  # UTM release whose dependency build the runtime comes from. Bumping it means
+  # producing a new runtime archive, so it is also the runtime cache key.
+  UTM_COMMIT: b6f7475be54f9cb542c46b131319454b83489ced
+  # aarch64-only runtime, assembled from that build by scripts/slim_runtime.mjs.
+  # Building the whole dependency sysroot from source takes tens of minutes and
+  # nothing about it changes when the app does; this takes seconds.
+  RUNTIME_URL: https://github.com/Yukiruoqwq/pocketvm-build/releases/download/runtime-1/pocketvm-runtime-ios-arm64.tar.gz
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          candidate=/Applications/Xcode_26.0.app
+          if [ -d "$candidate" ]; then
+            sudo xcode-select -s "$candidate"
+          else
+            latest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+            sudo xcode-select -s "$latest"
+          fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - uses: actions/cache/restore@v4
+        id: runtime-cache
+        with:
+          path: Dependencies
+          key: pocketvm-runtime-ios-arm64-${{ env.UTM_COMMIT }}-v1
+
+      # A miss is not an error: the download is a shortcut, and the fallback
+      # below rebuilds the same thing from source.
+      - name: Fetch prebuilt runtime
+        id: runtime
+        if: steps.runtime-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          curl -fsSL "$RUNTIME_URL" -o "$RUNNER_TEMP/runtime.tar.gz"
+          rm -rf Dependencies
+          mkdir -p Dependencies
+          tar -xzf "$RUNNER_TEMP/runtime.tar.gz" -C Dependencies
+          test -f Dependencies/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu
+          test -f Dependencies/qemu/edk2-aarch64-code.fd
+          du -sh Dependencies
+
+      - uses: actions/cache/save@v4
+        if: steps.runtime.outcome == 'success'
+        with:
+          path: Dependencies
+          key: ${{ steps.runtime-cache.outputs.cache-primary-key }}
+
+      - name: Build tools
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.runtime.outcome != 'success'
+        run: |
+          brew install xcodegen bison pkg-config gettext glib-utils libgpg-error \
+            nasm make meson cmake llvm spirv-llvm-translator libxcb libxrandr
+          echo "$(brew --prefix bison)/bin" >> "$GITHUB_PATH"
+          python3 -m venv .build-python
+          .build-python/bin/pip install six pyparsing pyyaml setuptools distlib mako
+          echo "$GITHUB_WORKSPACE/.build-python/bin" >> "$GITHUB_PATH"
+
+      - name: Build dependency sysroot from source
+        if: steps.runtime-cache.outputs.cache-hit != 'true' && steps.runtime.outcome != 'success'
+        run: |
+          set -o pipefail
+          git clone --filter=blob:none --no-checkout https://github.com/utmapp/UTM.git utm-src
+          git -C utm-src checkout "$UTM_COMMIT"
+          cd utm-src
+          ./scripts/build_dependencies.sh -p ios -a arm64 2>&1 | tee ../dependencies.log
+          mv sysroot-iOS-arm64 ..
+          cd ..
+          node scripts/slim_runtime.mjs "$PWD/sysroot-iOS-arm64/UTM.app" "$PWD/Dependencies" \
+            || bash scripts/prepare_dependencies.sh "$PWD/sysroot-iOS-arm64"
+
+      - name: Generate Xcode project
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          xcodegen generate
+
+      - name: Build app
+        run: |
+          set -o pipefail
+          xcodebuild -project PocketVM.xcodeproj -scheme PocketVM \
+            -configuration Release -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/PocketVM.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee app-build.log
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="PocketVM.xcarchive/Products/Applications/PocketVM.app"
+          test -f "$APP/PocketVM"
+          test -f "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu"
+          test -f "$APP/qemu/edk2-aarch64-code.fd"
+          xcrun lipo "$APP/PocketVM" -verify_arch arm64
+          xcrun lipo "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu" -verify_arch arm64
+          # The guest image is fetched on the device; anything larger than a few
+          # hundred megabytes here means something got bundled by accident.
+          du -sh "$APP"
+          mkdir -p package/Payload
+          ditto "$APP" package/Payload/PocketVM.app
+          (cd package && zip -qry ../PocketVM.ipa Payload)
+          unzip -tq PocketVM.ipa
+          shasum -a 256 PocketVM.ipa | tee SHA256SUMS
+          ls -lh PocketVM.ipa
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: PocketVM-build
+          path: |
+            PocketVM.ipa
+            SHA256SUMS
+            app-build.log
+            dependencies.log
+          if-no-files-found: warn
