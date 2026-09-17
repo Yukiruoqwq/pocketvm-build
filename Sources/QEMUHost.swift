@@ -486,7 +486,10 @@ final class QEMUHost {
             let bytes = Int64(sizeGiB) * 1_073_741_824
             let commands = [
                 "{\"execute\":\"qmp_capabilities\"}",
-                "{\"execute\":\"block_resize\",\"arguments\":{\"device\":\"\(node)\",\"size\":\(bytes)}}",
+                // `node-name` addresses the block node the drive declared.
+                // The older `device` spelling only finds a name that a
+                // BlockBackend owns, which a `-blockdev` node is not.
+                "{\"execute\":\"block_resize\",\"arguments\":{\"node-name\":\"\(node)\",\"size\":\(bytes)}}",
             ].joined(separator: "\n") + "\n"
             writeAll(fd: fd, data: Data(commands.utf8))
 

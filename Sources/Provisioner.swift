@@ -228,13 +228,23 @@ final class Provisioner: ObservableObject {
     /// UTM uses the ARM variable-store template for aarch64 as well; the
     /// aarch64 image ships code only. The guest writes boot entries into this
     /// file, so it lives in Documents next to the disk.
+    ///
+    /// The template is 321 KB while the flash device it backs is 64 MiB. QEMU's
+    /// own builds ship the variable store already padded to that size, and newer
+    /// emulators refuse a backend smaller than the device outright, so the file
+    /// is padded here rather than relying on the emulator to do it.
     private func installUEFIVariables() throws {
         let destination = VMConfiguration.documentsDirectory.appendingPathComponent("efi_vars.fd")
         if FileManager.default.fileExists(atPath: destination.path) { return }
         guard let template = Bundle.main.url(forResource: "edk2-arm-vars", withExtension: "fd", subdirectory: "qemu") else {
             throw VMConfigurationError.missingFile("qemu/edk2-arm-vars.fd")
         }
-        try FileManager.default.copyItem(at: template, to: destination)
+        let flashSize = 64 * 1024 * 1024
+        var contents = try Data(contentsOf: template)
+        if contents.count < flashSize {
+            contents.append(Data(repeating: 0xFF, count: flashSize - contents.count))
+        }
+        try contents.write(to: destination, options: .atomic)
     }
 
     private func defaultDrives(existing: VMConfiguration) -> [VMConfiguration.Drive] {
@@ -315,12 +325,11 @@ final class Provisioner: ObservableObject {
             groups: [adm, sudo, dialout]
             shell: /bin/bash
             sudo: "ALL=(ALL) NOPASSWD:ALL"
+            # A password has to be on the user itself, not only in a
+            # separate module: cloud-init warns and leaves the account
+            # locked if `lock_passwd` is set without one.
+            plain_text_passwd: \(state.password)
             lock_passwd: false
-        chpasswd:
-          expire: false
-          list: |
-            codex:\(state.password)
-            root:\(state.password)
         write_files:
           - path: /etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
             permissions: '0644'
@@ -388,16 +397,24 @@ final class Provisioner: ObservableObject {
         LOG=/var/log/pocketvm-provision.log
         say() { printf 'POCKETVM: %s\\n' "$*" > "$TTY" 2>/dev/null || true; }
 
+        # The host grows the virtual disk while this boot is already starting,
+        # which can land after the kernel first looked at it. Running this twice,
+        # with several minutes of package installation in between, means the
+        # second pass sees the final size whatever the timing was.
+        grow() {
+          ROOTDEV="$(findmnt -no SOURCE /)"
+          PART="$(printf '%s' "$ROOTDEV" | sed -n 's/.*[^0-9]\\([0-9][0-9]*\\)$/\\1/p')"
+          DISK="$(printf '%s' "$ROOTDEV" | sed -n 's/\\(.*[^0-9]\\)[0-9][0-9]*$/\\1/p')"
+          if [ -n "$PART" ] && [ -n "$DISK" ] && [ "$PART" != "$DISK" ]; then
+            partprobe "$DISK" >/dev/null 2>&1 || true
+            growpart "$DISK" "$PART" >/dev/null 2>&1 || true
+            resize2fs "$ROOTDEV" >/dev/null 2>&1 || true
+          fi
+          say "根分区 $(df -h / | awk 'NR==2 {print $2}')"
+        }
+
         say "扩容根分区"
-        ROOTDEV="$(findmnt -no SOURCE /)"
-        PART="$(printf '%s' "$ROOTDEV" | sed -n 's/.*[^0-9]\\([0-9][0-9]*\\)$/\\1/p')"
-        DISK="$(printf '%s' "$ROOTDEV" | sed -n 's/\\(.*[^0-9]\\)[0-9][0-9]*$/\\1/p')"
-        if [ -n "$PART" ] && [ -n "$DISK" ] && [ "$PART" != "$DISK" ]; then
-          partprobe "$DISK" >/dev/null 2>&1 || true
-          growpart "$DISK" "$PART" >/dev/null 2>&1 || true
-          resize2fs "$ROOTDEV" >/dev/null 2>&1 || true
-        fi
-        say "根分区 $(df -h / | awk 'NR==2 {print $2}')"
+        grow
 
         export DEBIAN_FRONTEND=noninteractive
         say "更新软件源"
@@ -422,6 +439,7 @@ final class Provisioner: ObservableObject {
 
         if command -v codex >/dev/null 2>&1; then
           say "Codex $(codex --version 2>/dev/null | head -n 1)"
+          grow
           echo POCKETVM_READY >"$TTY"
         else
           say "安装未完成"
