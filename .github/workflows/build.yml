@@ -49,8 +49,10 @@ jobs:
           set -euo pipefail
           curl -fsSL "$RUNTIME_URL" -o "$RUNNER_TEMP/runtime.tar.gz"
           rm -rf Dependencies
-          mkdir -p Dependencies
-          tar -xzf "$RUNNER_TEMP/runtime.tar.gz" -C Dependencies
+          # The archive already carries the Dependencies/ prefix; extracting it
+          # into a directory of the same name would nest it one level deeper,
+          # which is how this step first failed.
+          tar -xzf "$RUNNER_TEMP/runtime.tar.gz" -C "$PWD"
           test -f Dependencies/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu
           test -f Dependencies/qemu/edk2-aarch64-code.fd
           du -sh Dependencies
