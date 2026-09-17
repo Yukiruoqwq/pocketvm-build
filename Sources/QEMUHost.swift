@@ -187,10 +187,12 @@ final class QEMUHost {
         let thread = Thread { [weak self] in
             let status = QEMUHost.runQEMU(
                 argv: argv,
-                onInitialized: {
-                    guard let self, let resize = profile.resize, qmpHostFd >= 0 else { return }
+                onInitialized: { [weak self] in
+                    // Explicit `self` even after unwrapping: the shorthand does
+                    // not extend into the same guard's other conditions.
+                    guard let self, let resize = profile.resize, self.qmpHostFd >= 0 else { return }
                     QEMUHost.growDisk(
-                        fd: qmpHostFd,
+                        fd: self.qmpHostFd,
                         node: resize.node,
                         sizeGiB: resize.sizeGiB
                     ) { line in
