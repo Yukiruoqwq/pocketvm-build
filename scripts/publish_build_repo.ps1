@@ -13,7 +13,7 @@
 # Usage: powershell -File scripts/publish_build_repo.ps1
 [CmdletBinding()]
 param(
-    [string]$Remote = "https://github.com/Yukiruoqwq/pocketvm-build.git",
+    [string]$Remote = "https://github.com/abasbdjasdl/pocketvm-build.git",
     [string]$Worktree = "",
     [string]$Branch = "main"
 )

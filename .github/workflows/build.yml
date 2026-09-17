@@ -17,7 +17,7 @@ env:
   # aarch64-only runtime, assembled from that build by scripts/slim_runtime.mjs.
   # Building the whole dependency sysroot from source takes tens of minutes and
   # nothing about it changes when the app does; this takes seconds.
-  RUNTIME_URL: https://github.com/Yukiruoqwq/pocketvm-build/releases/download/runtime-1/pocketvm-runtime-ios-arm64.tar.gz
+  RUNTIME_URL: https://github.com/abasbdjasdl/pocketvm-build/releases/download/runtime-1/pocketvm-runtime-ios-arm64.tar.gz
 
 jobs:
   build:
