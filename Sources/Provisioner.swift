@@ -126,6 +126,7 @@ final class Provisioner: ObservableObject {
         }
 
         stage = .preparing
+        excludeFromBackup()
         try installUEFIVariables()
         var configuration = try VMConfiguration.loadOrCreateDefault()
         configuration.drives = defaultDrives(existing: configuration)
@@ -213,6 +214,16 @@ final class Provisioner: ObservableObject {
     }
 
     // MARK: - Firmware
+
+    /// The guest disk is tens of gigabytes of sparse file that iOS would happily
+    /// try to back up. Nothing in it is worth backing up: it can be rebuilt from
+    /// the image, and the image can be re-downloaded.
+    private func excludeFromBackup() {
+        var url = GuestImage.imagesDirectory
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try? url.setResourceValues(values)
+    }
 
     /// UTM uses the ARM variable-store template for aarch64 as well; the
     /// aarch64 image ships code only. The guest writes boot entries into this
