@@ -325,11 +325,18 @@ final class Provisioner: ObservableObject {
             groups: [adm, sudo, dialout]
             shell: /bin/bash
             sudo: "ALL=(ALL) NOPASSWD:ALL"
-            # A password has to be on the user itself, not only in a
-            # separate module: cloud-init warns and leaves the account
-            # locked if `lock_passwd` is set without one.
-            plain_text_passwd: \(state.password)
-            lock_passwd: false
+        # The password is set here rather than on the user because cloud-init's
+        # user schema rejects the plain-text field, and because this module runs
+        # after the account is created: whichever order the two take, the hash
+        # written here is the one that ends up in the shadow file.
+        chpasswd:
+          expire: false
+          users:
+            - name: codex
+              # Quoted: six digits without quotes are an integer to the YAML
+              # parser, and cloud-init's schema wants a string.
+              password: "\(state.password)"
+              type: text
         write_files:
           - path: /etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
             permissions: '0644'
