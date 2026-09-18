@@ -276,11 +276,13 @@ struct WebUIView: UIViewRepresentable {
             // guest-supplied string from becoming executable script.
             webView?.evaluateJavaScript(
                 "window.pocketvmReceive && window.pocketvmReceive(JSON.parse(\(jsStringLiteral(json))));"
-            ) { _, error in
+            ) { [weak self] _, error in
                 // A push that never lands is invisible otherwise: the page looks
                 // idle and the only way to find out why is to say so.
                 if let error {
-                    model.noteFromWeb("push \((object["action"] as? String) ?? "?") failed: \(error.localizedDescription)")
+                    self?.model.noteFromWeb(
+                        "push \((object["action"] as? String) ?? "?") failed: \(error.localizedDescription)"
+                    )
                 }
             }
         }
