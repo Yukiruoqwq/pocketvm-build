@@ -16,7 +16,7 @@ BASE="http://$HOST:$PORT"
 LIB=/usr/local/lib/pocketvm
 
 post() { # path, body
-  curl -fsS -m 30 -H 'Content-Type: application/json' -X POST "$BASE/$1" -d "$2" >/dev/null 2>&1 || true
+  curl --noproxy '*' -fsS -m 30 -H 'Content-Type: application/json' -X POST "$BASE/$1" -d "$2" >/dev/null 2>&1
 }
 
 # Hand the app the two files it boots next time, so that from the next start on
@@ -28,19 +28,23 @@ post() { # path, body
 # kernel upgrade makes the next boot send the new pair.
 upload_boot_files() {
   kernel="$(uname -r)"
+  batch="$(cat /proc/sys/kernel/random/uuid)"
   marker=/var/lib/pocketvm/boot-files-sent
-  [ -r "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$kernel" ] && return 0
+  # Re-upload each boot: host files may have been lost after a previous report.
   vmlinuz="/boot/vmlinuz-$kernel"
   initrd="/boot/initrd.img-$kernel"
-  [ -f "$vmlinuz" ] && [ -f "$initrd" ] || return 0
+  [ -f "$vmlinuz" ] && [ -f "$initrd" ] || return 1
+  upload_result=0
   # The proxy profile inside the guest is for the outside world; this is the
   # host on the other end of the emulated network.
   # No 100-continue: this listener answers once, when it has the whole body.
-  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$vmlinuz" "$BASE/upload/vmlinuz" >/dev/null 2>&1 || return 0
-  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$initrd" "$BASE/upload/initrd" >/dev/null 2>&1 || return 0
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$vmlinuz" "$BASE/upload/${batch}_vmlinuz" >/dev/null 2>&1 || return 0
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$initrd" "$BASE/upload/${batch}_initrd" >/dev/null 2>&1 || return 0
   install -d "$(dirname "$marker")" 2>/dev/null || true
   echo "$kernel" >"$marker"
-  post bootfiles "{\"kernel\":\"$kernel\"}"
+  kernel_hash="$(sha256sum "$vmlinuz" | cut -d ' ' -f1)"
+  initrd_hash="$(sha256sum "$initrd" | cut -d ' ' -f1)"
+  post bootfiles "{\"batch\":\"$batch\",\"vmlinuz\":\"$kernel_hash\",\"initrd\":\"$initrd_hash\"}"
 }
 
 # Install the guest's own proxy, once, from the app.
@@ -51,12 +55,12 @@ upload_boot_files() {
 # proxy, which is the right answer for a machine whose owner did not ask for one.
 setup_proxy() {
   marker=/var/lib/pocketvm/proxy-ready
-  [ -f "$marker" ] && return 0
   url="$(curl -fsS -m 20 --noproxy '*' "$BASE/proxy-url.txt" 2>/dev/null | head -n1 || true)"
   case "$url" in
-    http*) ;;
+    http://*|https://*) ;;
     *) return 0 ;;
   esac
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$url" ] && systemctl is-active --quiet mihomo; then return 0; fi
   script=/tmp/pocketvm-setup-proxy.sh
   curl -fsS -m 60 --noproxy '*' "$BASE/setup-proxy.sh" -o "$script" 2>/dev/null || return 0
   head -n1 "$script" | grep -q '^#!' || return 0
@@ -74,19 +78,24 @@ setup_proxy() {
 install_self() {
   command -v curl >/dev/null 2>&1 || return 1
   install -d "$LIB" || return 1
-  curl -fsS -m 60 "$BASE/pocketvm-report.sh" -o /usr/local/sbin/pocketvm-report || return 1
-  curl -fsS -m 60 "$BASE/pocketvm-app.mjs" -o "$LIB/pocketvm-app.mjs" || true
+  curl --noproxy '*' -fsS -m 60 "$BASE/pocketvm-report.sh" -o /usr/local/sbin/pocketvm-report.new || return 1
+  bash -n /usr/local/sbin/pocketvm-report.new || return 1
+  mv /usr/local/sbin/pocketvm-report.new /usr/local/sbin/pocketvm-report || return 1
+  curl --noproxy '*' -fsS -m 60 "$BASE/pocketvm-app.mjs" -o "$LIB/pocketvm-app.mjs.new" || return 1
+  node --check "$LIB/pocketvm-app.mjs.new" >/dev/null 2>&1 || node --input-type=module --check < "$LIB/pocketvm-app.mjs.new" || return 1
+  mv "$LIB/pocketvm-app.mjs.new" "$LIB/pocketvm-app.mjs" || return 1
   chmod 0755 /usr/local/sbin/pocketvm-report
   cat >/etc/systemd/system/pocketvm-report.service <<'EOF'
 [Unit]
 Description=PocketVM boot report
 Documentation=https://github.com/abasbdjasdl/pocketvm-build
-After=multi-user.target network-online.target
+After=network-online.target cloud-final.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+TimeoutStartSec=1800
 ExecStart=/usr/local/sbin/pocketvm-report
 
 [Install]
@@ -103,7 +112,6 @@ report() {
   post boot '{"stage":"booting"}'
   command -v codex >/dev/null 2>&1 || return 0
   version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
-  post ready "{\"stage\":\"ready\",\"version\":\"${version:-unknown}\"}"
   # The proxy must be ready before app-server is contacted. The service runs as
   # root, while the authenticated CLI state belongs to codex; querying as root
   # made every installation look signed out and returned an empty thread list.
@@ -112,10 +120,11 @@ report() {
   # conversation list. Starting the server three times would cost more in the
   # emulated guest than the answers do.
   if [ -f "$LIB/pocketvm-app.mjs" ] && command -v node >/dev/null 2>&1; then
-    export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:7890}"
-    export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7890}"
-    export ALL_PROXY="${ALL_PROXY:-socks5://127.0.0.1:7890}"
-    export NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.2.2}"
+    if [ -r /etc/profile.d/pocketvm-proxy.sh ]; then . /etc/profile.d/pocketvm-proxy.sh; fi
+    HTTPS_PROXY="${HTTPS_PROXY:-}"
+    HTTP_PROXY="${HTTP_PROXY:-}"
+    ALL_PROXY="${ALL_PROXY:-}"
+    NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.2.2}"
     if id codex >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
       runuser -u codex -- env HOME=/home/codex HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" ALL_PROXY="$ALL_PROXY" NO_PROXY="$NO_PROXY" \
         node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
@@ -127,6 +136,9 @@ report() {
     fi
     if [ -s /tmp/pocketvm-report.json ]; then
       post report "$(cat /tmp/pocketvm-report.json)"
+      if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.initialized === true ? 0 : 1)' /tmp/pocketvm-report.json; then
+        post ready '{"stage":"ready"}'
+      fi
     fi
   fi
   upload_boot_files
@@ -134,7 +146,7 @@ report() {
 
 case "${1:---boot}" in
   --install)
-    install_self
+    install_self || exit 1
     report
     ;;
   *)

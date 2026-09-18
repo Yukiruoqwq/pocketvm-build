@@ -20,7 +20,7 @@ if [ "${1:-status}" = "start" ]; then
   sleep 5
 fi
 
-status="$(timeout 20 codex login status 2>/dev/null || true)"
+status="$(timeout 20 codex login status 2>&1 || true)"
 if printf '%s' "$status" | grep -qi "not logged in"; then
   echo POCKETVM_AUTH_STATE not_logged_in
 elif printf '%s' "$status" | grep -qi "logged in"; then

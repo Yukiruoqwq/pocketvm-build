@@ -26,6 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate guest protocol and scripts
+        run: |
+          node --test scripts/test-app-server.mjs
+          node --check web/app.js
+          node --check web/terminal.js
+          for script in guest/*.sh guest/pocketvm-auth; do bash -n "$script"; done
+
       - name: Select Xcode
         run: |
           set -euo pipefail

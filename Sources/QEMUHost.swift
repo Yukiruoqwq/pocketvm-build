@@ -155,7 +155,13 @@ final class QEMUHost {
         // The monitor is wired up for every boot, not only when the disk has to
         // be grown: it is also the only way to ask the emulator to exit, which
         // is what makes a second start possible at all.
-        let qmp = try makeSerialConsole()
+        let qmp: (hostFd: Int32, guestFd: Int32)
+        do { qmp = try makeSerialConsole() } catch {
+            close(console.hostFd)
+            close(console.guestFd)
+            serialHostFd = -1
+            throw error
+        }
         qmpHostFd = qmp.hostFd
 
         func closeSockets() {
@@ -316,6 +322,10 @@ final class QEMUHost {
         guard socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0 else {
             throw POSIXError(.ENFILE)
         }
+        var noSignal: Int32 = 1
+        for fd in fds {
+            _ = setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+        }
         return (fds[1], fds[0])
     }
 
@@ -426,8 +436,8 @@ final class QEMUHost {
 
     private func requireFile(_ relative: String) throws -> String {
         let url = resolve(relative)
-        let documentsURL = documents().standardizedFileURL
-        let candidate = url.standardizedFileURL
+        let documentsURL = documents().resolvingSymlinksInPath().standardizedFileURL
+        let candidate = url.resolvingSymlinksInPath().standardizedFileURL
         let prefix = documentsURL.path.hasSuffix("/") ? documentsURL.path : documentsURL.path + "/"
         var isDirectory = ObjCBool(false)
         guard candidate.path == documentsURL.path || candidate.path.hasPrefix(prefix),

@@ -100,7 +100,21 @@ struct WebUIView: UIViewRepresentable {
             WebUIView.disableZoom(on: webView)
         }
 
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            guard let url = navigationAction.request.url, url.isFileURL,
+                  let root = Bundle.main.url(forResource: "web", withExtension: nil),
+                  url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/") else {
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.frameInfo.isMainFrame,
+                  let url = message.frameInfo.request.url, url.isFileURL,
+                  let root = Bundle.main.url(forResource: "web", withExtension: nil),
+                  url.standardizedFileURL.path.hasPrefix(root.standardizedFileURL.path + "/") else { return }
             guard let body = message.body as? [String: Any],
                   let action = body["action"] as? String else { return }
             let payload = body["payload"] as? [String: Any]
@@ -137,6 +151,10 @@ struct WebUIView: UIViewRepresentable {
             case "resetProvision":
                 // Only the marker, not the downloaded image: an image that has
                 // already been verified is the expensive part of a retry.
+                guard !model.isRunning, !model.provisioner.stage.isActive else {
+                    model.appendStatus("请先停止虚拟机，再重置安装状态。")
+                    return
+                }
                 model.provisioner.reset()
                 model.appendStatus("已清除准备状态，下次启动会重新配置客户机。")
                 model.pushProvisionState()
@@ -224,6 +242,9 @@ struct WebUIView: UIViewRepresentable {
                 guard let theme = payload?["theme"] as? String,
                       Self.appearances.contains(theme) else { return }
                 UserDefaults.standard.set(theme, forKey: Self.appearanceKey)
+
+            case "selectThread":
+                model.selectThread(payload?["id"] as? String)
 
             case "prompt":
                 if let text = payload?["text"] as? String {

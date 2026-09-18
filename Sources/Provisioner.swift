@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// Persisted record of the one-time guest setup.
 ///
@@ -26,10 +27,10 @@ struct ProvisionState: Codable {
         return state
     }
 
-    func write() {
+    func write() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try? encoder.encode(self).write(to: ProvisionState.url, options: .atomic)
+        try encoder.encode(self).write(to: ProvisionState.url, options: .atomic)
     }
 
     /// Six digits: the login is for a serial console the device owner is already
@@ -87,6 +88,48 @@ final class Provisioner: ObservableObject {
     private let store = GuestImageStore()
     private var server: SeedServer?
     private var lineBuffer = ""
+    private var bootPairMarker: URL {
+        VMConfiguration.documentsDirectory.appendingPathComponent("boot-pair.json")
+    }
+    private var bootAttempt: URL {
+        VMConfiguration.documentsDirectory.appendingPathComponent("direct-boot.pending")
+    }
+    func acknowledgeSystemBoot() {
+        try? FileManager.default.removeItem(at: bootAttempt)
+    }
+    func finishBootUpload(_ body: Data) {
+        do {
+            guard let report = try JSONSerialization.jsonObject(with: body) as? [String: String],
+                  let batch = report["batch"], UUID(uuidString: batch) != nil else { return }
+            var paths: [String: String] = [:]
+            for name in ["vmlinuz", "initrd"] {
+                let path = "boot/" + batch + "/" + name
+                let file = VMConfiguration.documentsDirectory.appendingPathComponent(path)
+                let data = try Data(contentsOf: file)
+                let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                guard data.count > 1 << 20, report[name] == digest else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                paths[name] = path
+            }
+            try JSONSerialization.data(withJSONObject: paths).write(to: bootPairMarker, options: .atomic)
+            markProvisioned()
+        } catch {
+            stage = .failed("启动文件校验或保存失败：\(error)")
+            onLog?("boot pair rejected: \(error)")
+        }
+    }
+    private func committedBootPaths() -> [String: String]? {
+        guard let data = try? Data(contentsOf: bootPairMarker),
+              let paths = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return nil }
+        for name in ["vmlinuz", "initrd"] {
+            guard let path = paths[name] else { return nil }
+            let parts = path.split(separator: "/")
+            guard parts.count == 3, parts[0] == "boot", UUID(uuidString: String(parts[1])) != nil,
+                  parts[2] == Substring(name) else { return nil }
+        }
+        return paths
+    }
 
     /// Set when the guest reports that it finished; the caller uses it to drop
     /// the seed arguments from the next boot.
@@ -135,23 +178,21 @@ final class Provisioner: ObservableObject {
         if !state.completed {
             if !FileManager.default.fileExists(atPath: image.localURL.path) {
                 _ = try await ensureImage()
-            } else {
-                stage = .verifying(0)
-                do {
-                    try await verifyExisting()
-                } catch {
-                    stage = .downloading(0)
-                    _ = try await ensureImage()
-                }
             }
+            // Existing qcow2 files are writable guest disks, not immutable downloads.
+            // Never delete a partially installed system because its hash changed.
         }
 
+        cancelCommands()
         stage = .preparing
         excludeFromBackup()
         try installUEFIVariables()
         var configuration = try VMConfiguration.loadOrCreateDefault()
         configuration.name = "Debian 13 · aarch64"
         configuration.boot = bootConfiguration()
+        if configuration.boot.mode == .direct {
+            try Data("pending".utf8).write(to: bootAttempt, options: .atomic)
+        }
         configuration.drives = defaultDrives(existing: configuration, boot: configuration.boot)
         configuration = configuration.validated()
         try configuration.write()
@@ -191,8 +232,9 @@ final class Provisioner: ObservableObject {
     func markProvisioned() {
         guard !state.completed else { return }
         let documents = VMConfiguration.documentsDirectory
-        let kernel = documents.appendingPathComponent(image.directBoot.kernel)
-        let initrd = documents.appendingPathComponent(image.directBoot.initrd)
+        guard let paths = committedBootPaths(), let kernelPath = paths["vmlinuz"], let initrdPath = paths["initrd"] else { return }
+        let kernel = documents.appendingPathComponent(kernelPath)
+        let initrd = documents.appendingPathComponent(initrdPath)
         let kernelSize: Int = {
             guard let attributes = try? FileManager.default.attributesOfItem(atPath: kernel.path),
                   let number = attributes[.size] as? NSNumber else { return 0 }
@@ -203,7 +245,8 @@ final class Provisioner: ObservableObject {
                   let number = attributes[.size] as? NSNumber else { return 0 }
             return number.intValue
         }()
-        guard kernelSize > 1 << 20, initrdSize > 1 << 20 else {
+        guard FileManager.default.fileExists(atPath: bootPairMarker.path),
+              kernelSize > 1 << 20, initrdSize > 1 << 20 else {
             // POCKETVM_READY is emitted before the guest upload service can
             // finish. Treating it as final here made the next boot skip the
             // installer and fall back to an unverified firmware path.
@@ -211,12 +254,17 @@ final class Provisioner: ObservableObject {
             onLog?("provisioning completion deferred: kernel/initrd are missing or too small")
             return
         }
-        state.completed = true
+        var completedState = state
+        completedState.completed = true
         // Keep capacityApplied false until a successful monitor reply is
         // observed. Retrying an idempotent resize is safer than remembering a
         // failed resize and booting a smaller filesystem forever.
-        state.completedAt = Date()
-        state.write()
+        completedState.completedAt = Date()
+        do { try completedState.write() } catch {
+            stage = .failed("无法保存安装状态：\(error)")
+            return
+        }
+        state = completedState
         stage = .ready
         onLog?("guest reported provisioning complete")
         onFinished?(state)
@@ -225,8 +273,12 @@ final class Provisioner: ObservableObject {
     func reset() {
         server?.stop()
         server = nil
-        state = ProvisionState()
-        state.write()
+        let fresh = ProvisionState()
+        do { try fresh.write() } catch {
+            stage = .failed("无法重置安装状态：\(error)")
+            return
+        }
+        state = fresh
         stage = .idle
     }
 
@@ -309,17 +361,23 @@ final class Provisioner: ObservableObject {
     private func bootConfiguration() -> VMConfiguration.Boot {
         let documents = VMConfiguration.documentsDirectory
         let direct = image.directBoot
-        let kernel = documents.appendingPathComponent(direct.kernel)
-        let initrd = documents.appendingPathComponent(direct.initrd)
-        guard FileManager.default.fileExists(atPath: kernel.path),
+        guard !FileManager.default.fileExists(atPath: bootAttempt.path),
+              let paths = committedBootPaths(), let kernelPath = paths["vmlinuz"], let initrdPath = paths["initrd"] else {
+            onLog?("using UEFI: no committed boot pair or last direct boot was not confirmed")
+            return VMConfiguration.Boot(mode: .uefi)
+        }
+        let kernel = documents.appendingPathComponent(kernelPath)
+        let initrd = documents.appendingPathComponent(initrdPath)
+        guard FileManager.default.fileExists(atPath: bootPairMarker.path),
+              FileManager.default.fileExists(atPath: kernel.path),
               FileManager.default.fileExists(atPath: initrd.path) else {
             return VMConfiguration.Boot(mode: .uefi)
         }
         onLog?("booting the guest's own kernel directly")
         return VMConfiguration.Boot(
             mode: .direct,
-            kernel: direct.kernel,
-            initrd: direct.initrd,
+            kernel: kernelPath,
+            initrd: initrdPath,
             cmdline: direct.cmdline
         )
     }
@@ -399,19 +457,8 @@ final class Provisioner: ObservableObject {
         resources["/user-data"] = .yaml(userData())
         resources["/vendor-data"] = .text("#cloud-config\n")
 
-        // The fixed port is what a guest installed by this build already knows;
-        // if something else on the device holds it, an ephemeral one still lets
-        // the console fallback do the work.
-        if let server = try? SeedServer(preferredPort: Self.helperPort) {
-            configure(server)
-            do {
-                try server.start(resources: resources)
-                return server
-            } catch {
-                onLog?("helper port \(Self.helperPort) is taken: \(error)")
-            }
-        }
-        let server = try SeedServer(preferredPort: 0)
+        // Installed guests persist this endpoint. Fail explicitly if unavailable.
+        let server = try SeedServer(preferredPort: Self.helperPort)
         configure(server)
         try server.start(resources: resources)
         return server
@@ -432,7 +479,7 @@ final class Provisioner: ObservableObject {
             }
             self.onGuestReport?(path, body)
         }
-        server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) }
+        server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) ?? false }
         server.onDynamicResource = { [weak self] path in self?.dynamicResource(path) }
     }
 
@@ -447,6 +494,14 @@ final class Provisioner: ObservableObject {
     private var commandQueue: [(id: String, script: String)] = []
     private var commandCallbacks: [String: (String) -> Void] = [:]
     private var commandCounter = 0
+
+    func cancelCommands() {
+        let callbacks = Array(commandCallbacks.values)
+        commandCallbacks.removeAll()
+        commandQueue.removeAll()
+        agentLastSeen = .distantPast
+        for callback in callbacks { callback("客户机命令已取消") }
+    }
     private static let commandLimit = 32
     /// When the agent last came asking for work. A guest installed by an older
     /// build has no agent, and the caller needs to know which of the two
@@ -468,13 +523,20 @@ final class Provisioner: ObservableObject {
         // commands would only delay the start behind them.
         if commandQueue.contains(where: { $0.script == script }) {
             onLog?("coalesced a duplicate command for the guest (#\(id))")
+            callback("相同请求已在队列中")
             return
         }
         commandQueue.append((id: id, script: script))
         commandCallbacks[id] = callback
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(360))
+            guard let self, let expired = self.commandCallbacks.removeValue(forKey: id) else { return }
+            self.commandQueue.removeAll { $0.id == id }
+            expired("客户机命令超时，请查看客户机日志")
+        }
         while commandQueue.count > Self.commandLimit {
             let dropped = commandQueue.removeFirst()
-            commandCallbacks.removeValue(forKey: dropped.id)
+            commandCallbacks.removeValue(forKey: dropped.id)?("客户机队列已满，请重试")
             onLog?("dropped stale command #\(dropped.id) for the guest")
         }
         onLog?("queued a command for the guest (#\(id), \(commandQueue.count) waiting)")
@@ -508,18 +570,14 @@ final class Provisioner: ObservableObject {
     /// has nobody on the cable to copy them across. A half-written file is worse
     /// than no file — it would be booted — so the write is atomic and a body
     /// that is obviously short is refused.
-    private func store(upload name: String, body: Data) {
-        let destination: String
-        switch name {
-        case "vmlinuz": destination = image.directBoot.kernel
-        case "initrd": destination = image.directBoot.initrd
-        default:
-            onLog?("guest uploaded an unknown file: \(name)")
-            return
-        }
+    private func store(upload name: String, body: Data) -> Bool {
+        let parts = name.split(separator: "_", maxSplits: 1)
+        guard parts.count == 2, UUID(uuidString: String(parts[0])) != nil,
+              ["vmlinuz", "initrd"].contains(String(parts[1])) else { return false }
+        let destination = "boot/" + parts[0] + "/" + parts[1]
         guard body.count > 1 << 20 else {
             onLog?("guest's \(name) is too small to be real: \(body.count) bytes")
-            return
+            return false
         }
         let url = VMConfiguration.documentsDirectory.appendingPathComponent(destination)
         do {
@@ -529,8 +587,10 @@ final class Provisioner: ObservableObject {
             )
             try body.write(to: url, options: .atomic)
             onLog?("guest handed over \(destination): \(body.count) bytes")
+            return true
         } catch {
             onLog?("could not keep \(destination): \(error)")
+            return false
         }
     }
 
@@ -681,6 +741,7 @@ final class Provisioner: ObservableObject {
         #!/bin/bash
         # Written by PocketVM. Safe to re-run: every step is idempotent.
         set -u
+        set -o pipefail
         TTY=/dev/ttyAMA0
         LOG=/var/log/pocketvm-provision.log
         say() { printf 'POCKETVM: %s\\n' "$*" > "$TTY" 2>/dev/null || true; }
@@ -700,6 +761,11 @@ final class Provisioner: ObservableObject {
           fi
           say "根分区 $(df -h / | awk 'NR==2 {print $2}')"
         }
+
+        fail() { say "$*"; echo POCKETVM_FAILED >"$TTY"; exit 1; }
+        exec 9>/run/pocketvm-install.lock
+        flock -n 9 || exit 0
+        dpkg --configure -a >>"$LOG" 2>&1 || fail "恢复软件包配置失败"
 
         say "扩容根分区"
         grow
@@ -733,13 +799,13 @@ final class Provisioner: ObservableObject {
             cp "$MIRRORDIR/debian.list.pocketvm" "$MIRRORDIR/debian.list"
             cp "$MIRRORDIR/debian-security.list.pocketvm" "$MIRRORDIR/debian-security.list"
           fi
-          apt-get $APT_LOCK update -qq >>"$LOG" 2>&1 || say "软件源更新失败，稍后可在终端重试"
+          apt-get $APT_LOCK update -qq >>"$LOG" 2>&1 || fail "软件源更新失败"
         fi
 
         say "安装基础软件"
         apt-get $APT_LOCK install -y -qq --no-install-recommends \\
           curl ca-certificates git jq nodejs npm >>"$LOG" 2>&1 \\
-          || say "基础软件安装失败，稍后可在终端重试"
+          || fail "基础软件安装失败"
 
         if ! command -v node >/dev/null 2>&1; then
           say "改用 NodeSource 安装 Node"
@@ -750,10 +816,10 @@ final class Provisioner: ObservableObject {
 
         if ! command -v codex >/dev/null 2>&1; then
           say "安装 Codex CLI"
-          npm install -g --no-fund --no-audit @openai/codex >>"$LOG" 2>&1 || say "Codex 安装失败，可在终端手动重试"
+          npm install -g --no-fund --no-audit @openai/codex >>"$LOG" 2>&1 || fail "Codex 安装失败"
         fi
 
-        if command -v codex >/dev/null 2>&1; then
+        if timeout 30 codex --version >/dev/null 2>&1; then
           say "Codex $(codex --version 2>/dev/null | head -n 1)"
           grow
           # From here on the guest reports its own boot to the host over HTTP,
@@ -763,8 +829,12 @@ final class Provisioner: ObservableObject {
           if curl -fsS -m 30 "http://10.0.2.2:\(Self.helperPort)/pocketvm-report.sh" \
               -o /tmp/pocketvm-report.sh 2>/dev/null; then
             bash /tmp/pocketvm-report.sh --install >/dev/null 2>&1 \\
-              || say "上报服务安装失败，下次启动主机仍会用串口确认一次"
+              || fail "上报或启动文件上传失败"
+          else
+            fail "无法下载上报服务"
           fi
+          install -d /var/lib/pocketvm
+          touch /var/lib/pocketvm/install-complete || fail "保存安装完成状态失败"
           echo POCKETVM_READY >"$TTY"
         else
           say "安装未完成"

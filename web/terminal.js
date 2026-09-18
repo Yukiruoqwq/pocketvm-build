@@ -297,6 +297,7 @@ function fitTerminalViewport() {
 function updateKeyboardInset() {
   const viewport = window.visualViewport;
   if (!viewport) return;
+  document.documentElement.style.setProperty("--terminal-available-height", `${Math.max(0, viewport.height - 52)}px`);
   const inset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
   document.documentElement.style.setProperty("--keyboard-offset", `${inset}px`);
   window.requestAnimationFrame(fitTerminalViewport);
@@ -330,6 +331,7 @@ function wireTerminalPanel() {
     document.documentElement.style.setProperty("--terminal-height", `${Math.round(next)}px`);
     fitTerminalViewport();
   });
+  handle.addEventListener("pointercancel", () => document.body.classList.remove("resizing-terminal"));
   handle.addEventListener("pointerup", (event) => {
     if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
     document.body.classList.remove("resizing-terminal");

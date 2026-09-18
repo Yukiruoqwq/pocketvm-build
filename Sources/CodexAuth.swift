@@ -46,6 +46,7 @@ final class CodexAuth: ObservableObject {
     /// guest so the shell stays usable for polling.
     func begin(send: @escaping (String) -> Void) {
         self.send = send
+        cancel()
         pendingURL = nil
         pendingCode = nil
         polls = 0
@@ -66,6 +67,13 @@ final class CodexAuth: ObservableObject {
     func cancel() {
         timer?.invalidate()
         timer = nil
+    }
+
+    func reset() {
+        cancel()
+        state = .unknown
+        pendingURL = nil
+        pendingCode = nil
     }
 
     func fail(_ reason: String) {
@@ -109,6 +117,7 @@ final class CodexAuth: ObservableObject {
             return
         }
 
+        guard state.isWaiting else { return }
         if let url = CodexAuth.firstURL(in: text), pendingURL == nil {
             pendingURL = url
         }
@@ -142,7 +151,7 @@ final class CodexAuth: ObservableObject {
                 // only fills the console with commands nobody is waiting for.
                 self.polls += 1
                 if self.polls > 120 {
-                    self.cancel()
+                    self.fail("设备登录码已过期，请重新登录")
                     return
                 }
                 if self.polls > 10, case .starting = self.state {

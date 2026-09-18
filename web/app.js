@@ -522,6 +522,7 @@ function renderThreads() {
       for (const other of list.querySelectorAll("li")) other.classList.remove("active");
       row.classList.add("active");
       $("threadTitle").textContent = threadTitle(thread);
+      bridge.send("selectThread", { id: thread.id });
     });
     list.appendChild(row);
   }
@@ -1330,6 +1331,7 @@ function wireCommandMenu() {
 let toggleCommandMenu = () => {};
 
 function startNewThread() {
+  bridge.send("selectThread", {});
   state.messages = [];
   $("threadTitle").textContent = "新对话";
   renderMessages();

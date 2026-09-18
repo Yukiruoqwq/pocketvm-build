@@ -20,6 +20,7 @@ const METHODS = {
   limits: "account/rateLimits/read",
   account: "account/read",
   threads: "thread/list",
+  thread: "thread/read",
 };
 
 /// Everything the picker draws, and nothing else: raw model entries carry
@@ -36,7 +37,7 @@ const MODEL_FIELDS = [
 ];
 
 const only = process.argv[2] ?? "";
-const wanted = Object.entries(METHODS).filter(([, method]) => !only || method === only);
+const wanted = Object.entries(METHODS).filter(([, method]) => (!only && method !== "thread/read") || method === only);
 const results = {};
 
 let pending = null;
@@ -51,7 +52,7 @@ let stderr = "";
 
 // A report runs during boot and must never hold provisioning hostage. Account
 // data can be refreshed later through the command agent after sign-in.
-const timer = setTimeout(() => finish(), 60000);
+const timer = setTimeout(() => { results.error = "app-server 请求超时"; finish(); }, 60000);
 
 function finish() {
   if (done) return;
@@ -79,6 +80,7 @@ function ask() {
   index += 1;
   pending = key;
   const params =
+    method === "thread/read" ? { threadId: process.argv[3], includeTurns: true } :
     method === "model/list"
       ? { includeHidden: true, cursor: null, limit: 100 }
       : method === "thread/list"
@@ -88,10 +90,11 @@ function ask() {
   send({ jsonrpc: "2.0", id: pendingId, method, params });
 }
 
-child.on("error", () => finish());
-child.on("exit", () => finish());
+child.on("error", (error) => { results.error = error.message; finish(); });
+child.stdin.on("error", (error) => { results.error = error.message; finish(); });
+child.on("close", () => { if (!done) results.error = "app-server 提前退出"; finish(); });
 child.stderr.on("data", (chunk) => {
-  stderr += chunk.toString();
+  stderr = (stderr + chunk.toString()).slice(-8192);
 });
 
 child.stdout.on("data", (chunk) => {
@@ -112,6 +115,7 @@ child.stdout.on("data", (chunk) => {
         finish();
         continue;
       }
+      results.initialized = true;
       send({ jsonrpc: "2.0", method: "initialized" });
       ask();
       continue;

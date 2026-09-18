@@ -142,7 +142,9 @@ struct VMConfiguration: Codable, Equatable {
     private static func safeRelativePath(_ value: String?) -> String? {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.contains(":") else { return nil }
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.contains(":"), !trimmed.contains(","),
+              !trimmed.contains("\\"),
+              trimmed.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }) else { return nil }
         let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
         guard !parts.isEmpty,
               !parts.contains(where: { $0 == ".." || $0 == "." }) else { return nil }

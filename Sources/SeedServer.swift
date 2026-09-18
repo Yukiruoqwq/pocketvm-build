@@ -49,7 +49,7 @@ final class SeedServer {
     /// Called with the body of every POST: the guest reporting something.
     var onPost: ((String, Data) -> Void)?
     /// Called with the body of every upload: a file the guest is handing over.
-    var onUpload: ((String, Data) -> Void)?
+    var onUpload: ((String, Data) -> Bool)?
     /// Asked for a resource the guest requests that is not one of the fixed
     /// ones: the command agent's queue answers differently every time.
     var onDynamicResource: ((String) -> Resource?)?
@@ -169,6 +169,20 @@ final class SeedServer {
             send(connection, status: "400 Bad Request", contentType: "text/plain", body: Data("bad request\n".utf8))
             return
         }
+        let headerLines = headerText.components(separatedBy: "\r\n").dropFirst()
+        let lengths = headerLines.compactMap { line -> String? in
+            let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0].lowercased() == "content-length" else { return nil }
+            return parts[1].trimmingCharacters(in: .whitespaces)
+        }
+        let actualLength = request.distance(from: separator.upperBound, to: request.endIndex)
+        guard !headerLines.contains(where: { $0.lowercased().hasPrefix("transfer-encoding:") }),
+              lengths.count <= 1,
+              (lengths.isEmpty ? actualLength == 0 : Int(lengths[0]) == actualLength),
+              Self.isComplete(request) else {
+            send(connection, status: "400 Bad Request", contentType: "text/plain", body: Data("truncated request\n".utf8))
+            return
+        }
         let path = SeedServer.requestPath(headerText)
         let requestLine = headerText.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
         onRequest?(String(requestLine))
@@ -195,7 +209,10 @@ final class SeedServer {
                 send(connection, status: "400 Bad Request", contentType: "text/plain", body: Data("invalid upload name\n".utf8))
                 return
             }
-            onUpload?(name, body)
+            guard DispatchQueue.main.sync(execute: { self.onUpload?(name, body) ?? false }) else {
+                send(connection, status: "500 Internal Server Error", contentType: "text/plain", body: Data("upload was not saved\n".utf8))
+                return
+            }
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
         }
@@ -205,12 +222,13 @@ final class SeedServer {
                 send(connection, status: "413 Payload Too Large", contentType: "text/plain", body: Data("report too large\n".utf8))
                 return
             }
-            onPost?(path, body)
+            DispatchQueue.main.async { self.onPost?(path, body) }
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
         }
 
-        let dynamic = resources[path] == nil ? onDynamicResource?(path) : nil
+        let dynamic: Resource? = resources[path] == nil
+            ? DispatchQueue.main.sync(execute: { self.onDynamicResource?(path) }) : nil
         let resource = resources[path]
             ?? dynamic
             ?? Resource(contentType: "text/plain; charset=utf-8", body: Data("not found\n".utf8))

@@ -24,7 +24,7 @@ while :; do
   fi
   id="$(printf '%s\n' "$reply" | head -n1)"
   script="$(printf '%s\n' "$reply" | tail -n +2)"
-  output="$(bash -c "$script" 2>&1; printf 'EXIT:%d' "$?")"
+  output="$(timeout --kill-after=10 300 bash -c "$script" 2>&1; printf '\nEXIT:%d\n' "$?")"
   curl -fsS -m 30 --noproxy '*' -X POST "$BASE/result" \
     --data-binary "$(printf '%s\n%s' "$id" "$output")" >/dev/null 2>&1 || true
 done

@@ -77,6 +77,10 @@ final class VMModel: ObservableObject {
     /// actually exited. A start during that window is what used to crash the
     /// app: QEMU cannot be initialised twice in one process.
     private var stopping = false
+    private var starting = false
+    private var promptInFlight = false
+    private var authRequestPending = false
+    private var selectedThreadID: String?
     /// Set once the guest's own OS has been heard from, which is what makes
     /// typing at the console safe.
     private var probeArmed = false
@@ -117,6 +121,8 @@ final class VMModel: ObservableObject {
         host.onExit = { [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
+                self.auth.reset()
+                self.provisioner.cancelCommands()
                 self.isRunning = false
                 self.stopping = false
                 self.status = "exited (\(status))"
@@ -140,7 +146,7 @@ final class VMModel: ObservableObject {
                 // Installation only proves that the binary was written. The
                 // running guest still has to start its report service and CLI;
                 // `/ready` is the sole transition into the usable state.
-                if self.isRunning {
+                if self.isRunning, !self.codexReady {
                     self.bootDetail = "正在启动 Codex CLI"
                     self.pushProvisionState()
                 }
@@ -359,21 +365,80 @@ final class VMModel: ObservableObject {
 
     /// A prompt from the conversation pane.
     ///
-    /// The conversation runs in the guest's Codex CLI. Wiring the pane to it
-    /// needs an app-server channel, so until that exists the honest answer is
-    /// the one the guest can act on: the text goes to the shell, where the user
-    /// can see it arrive in the terminal.
+    /// Execute through the command agent and return structured CLI events.
+    /// Serial input belongs exclusively to the interactive terminal.
     func handlePrompt(_ text: String) {
         let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000))
         guard !text.isEmpty else { return }
-        transcript.append(["role": "user", "text": text])
-        pushMessages()
         guard isRunning else {
             appendStatus("虚拟机未运行，先在设置里启动。")
             return
         }
-        appendStatus("消息已发送到客户机终端；对话面板由客户机内的 Codex 接管后即可直接回复。")
-        host.writeToConsole(ConsoleText.execCommand(text, selection: storedModelSelection()) + "\n")
+        guard codexReady, !promptInFlight else {
+            appendStatus("客户机尚未就绪或上一条消息仍在执行。")
+            return
+        }
+        transcript.append(["role": "user", "text": text])
+        pushMessages()
+        promptInFlight = true
+        let command = ConsoleText.execCommand(text, selection: storedModelSelection(), threadID: selectedThreadID)
+        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted("cd /home/codex && " + command))") { [weak self] output in
+            Task { @MainActor in
+                guard let self else { return }
+                self.promptInFlight = false
+                var received = false
+                for line in output.split(separator: "\n") {
+                    guard let data = String(line).data(using: .utf8),
+                          let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+                    if event["type"] as? String == "thread.started", let id = event["thread_id"] as? String {
+                        self.selectedThreadID = id
+                    }
+                    if event["type"] as? String == "item.completed",
+                       let item = event["item"] as? [String: Any], item["type"] as? String == "agent_message",
+                       let text = item["text"] as? String {
+                        self.transcript.append(["role": "assistant", "text": text])
+                        received = true
+                    }
+                }
+                if !received { self.appendStatus("Codex 未返回回复：\(output.suffix(1000))") }
+                self.pushMessages()
+                self.requestModels()
+            }
+        }
+    }
+
+    func selectThread(_ id: String?) {
+        guard !promptInFlight else { appendStatus("请等待当前回复完成。"); return }
+        selectedThreadID = id
+        transcript = []
+        pushMessages()
+        guard let id, isRunning, codexReady else { return }
+        let command = "node /usr/local/lib/pocketvm/pocketvm-app.mjs thread/read " + ConsoleText.shellQuoted(id)
+        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))") { [weak self] output in
+            Task { @MainActor in
+                guard let self, self.selectedThreadID == id else { return }
+                guard let line = output.split(separator: "\n").first,
+                      let data = String(line).data(using: .utf8),
+                      let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let thread = response["thread"] as? [String: Any],
+                      let turns = thread["turns"] as? [[String: Any]] else {
+                    self.appendStatus("读取对话失败：\(output.suffix(500))")
+                    return
+                }
+                for turn in turns {
+                    for item in turn["items"] as? [[String: Any]] ?? [] {
+                        if item["type"] as? String == "agentMessage", let text = item["text"] as? String {
+                            self.transcript.append(["role": "assistant", "text": text])
+                        } else if item["type"] as? String == "userMessage" {
+                            let content = item["content"] as? [[String: Any]] ?? []
+                            let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+                            self.transcript.append(["role": "user", "text": text])
+                        }
+                    }
+                }
+                self.pushMessages()
+            }
+        }
     }
 
     // ------------------------------------------------------------- 模型
@@ -392,14 +457,20 @@ final class VMModel: ObservableObject {
     /// installed by an earlier build answers the same question as a new one.
     func requestModels() {
         guard isRunning, codexReady else { return }
-        guard let base = provisioner.helperBaseURL else {
-            append(diagnostic: "no helper server is running")
-            return
+        let command = "node /usr/local/lib/pocketvm/pocketvm-app.mjs"
+        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))") { [weak self] output in
+            Task { @MainActor in
+                guard let self else { return }
+                for line in output.split(separator: "\n") {
+                    if let data = String(line).data(using: .utf8),
+                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
+                        self.apply(report: data)
+                        return
+                    }
+                }
+                self.append(diagnostic: "无法读取账户数据：\(output.suffix(500))")
+            }
         }
-        // Installing the reporter is also how the list is asked for: it reports
-        // the models it finds as soon as it runs.
-        append(diagnostic: "asking the guest for its model list")
-        host.writeToConsole(bootstrapCommand(base: base) + "\n")
     }
 
     // MARK: - 客户机的上报
@@ -415,10 +486,14 @@ final class VMModel: ObservableObject {
         append(diagnostic: "guest reported \(path) \(text.prefix(160))")
         switch path {
         case "/boot":
+            provisioner.acknowledgeSystemBoot()
             // The guest's own system is up and reachable. Everything left is
             // the CLI inside it, which is the step the gate name refers to.
             noteGuestSystemUp()
+        case "/bootfiles":
+            provisioner.finishBootUpload(body)
         case "/ready":
+            guard isRunning else { return }
             markCodexReady()
         case "/report":
             apply(report: body)
@@ -480,7 +555,7 @@ final class VMModel: ObservableObject {
     /// from the host and install it. After that the guest announces its own boot
     /// and nothing has to be typed at the console again.
     private func bootstrapCommand(base: String) -> String {
-        "curl -fsS \(base)/pocketvm-report.sh -o /tmp/pocketvm-report.sh"
+        "curl --noproxy '*' -m 60 -fsS \(base)/pocketvm-report.sh -o /tmp/pocketvm-report.sh"
             + " && sudo bash /tmp/pocketvm-report.sh --install"
     }
 
@@ -525,11 +600,16 @@ final class VMModel: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        guard !isRunning, !stopping else { return }
+        guard !isRunning, !stopping, !starting else { return }
         Task { await startPrepared() }
     }
 
     private func startPrepared() async {
+        guard !isRunning, !stopping, !starting else { return }
+        starting = true
+        refreshedAfterSignIn = false
+        defer { starting = false }
+        auth.reset()
         diagnostics.removeAll()
         consoleBuffer.removeAll(keepingCapacity: true)
         probeArmed = false
@@ -619,6 +699,7 @@ final class VMModel: ObservableObject {
             return
         }
         appendStatus("正在向客户机请求设备代码…")
+        guard !authRequestPending, !auth.state.isWaiting else { return }
         auth.begin { [weak self] command in
             self?.runAuth(command)
         }
@@ -677,24 +758,26 @@ final class VMModel: ObservableObject {
         // The guest's own proxy is what keeps OpenAI from seeing the iPad's
         // blocked region. Older guests may not have the profile script, so the
         // environment is set on the command itself rather than assumed.
-        let proxy = "export HTTPS_PROXY=http://127.0.0.1:7890 "
-            + "HTTP_PROXY=http://127.0.0.1:7890 "
-            + "ALL_PROXY=socks5://127.0.0.1:7890 "
-            + "NO_PROXY=localhost,127.0.0.1,10.0.2.2; "
+        let proxy = "if [ -r /etc/profile.d/pocketvm-proxy.sh ]; then . /etc/profile.d/pocketvm-proxy.sh; fi; "
         if subcommand == "start" {
             return proxy + "rm -f \(log); "
                 + "( if command -v setsid >/dev/null 2>&1; then "
                 + "exec setsid codex login --device-auth; else "
                 + "exec nohup codex login --device-auth; fi ) "
                 + ">\(log) 2>&1 </dev/null & "
-                + "sleep 5; timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
+                + "sleep 5; timeout 10 codex login status 2>&1 || true; tail -n 40 \(log) 2>/dev/null"
         }
-        return proxy + "timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
+        return proxy + "timeout 10 codex login status 2>&1 || true; tail -n 40 \(log) 2>/dev/null"
     }
 
     private func queueAuth(_ script: String) {
+        guard !authRequestPending else { return }
+        authRequestPending = true
         provisioner.runInGuest(script) { [weak self] output in
-            Task { @MainActor in self?.ingestAuthOutput(output) }
+            Task { @MainActor in
+                self?.authRequestPending = false
+                self?.ingestAuthOutput(output)
+            }
         }
     }
 
@@ -728,7 +811,9 @@ final class VMModel: ObservableObject {
             appendStatus("已清除代理订阅。")
             return
         }
-        guard trimmed.hasPrefix("http") else {
+        guard let parsed = URL(string: trimmed),
+              ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+              parsed.host != nil else {
             appendStatus("订阅链接要以 http 开头。")
             return
         }
@@ -756,7 +841,6 @@ final class VMModel: ObservableObject {
             consoleBuffer = Data(consoleBuffer[consoleBuffer.index(after: newline)...])
             let line = ConsoleText.plain(String(decoding: lineData, as: UTF8.self))
             provisioner.ingest(consoleLine: line)
-            auth.ingest(line: line)
             noteModels(line: line)
             noteBoot(line: line)
         }
@@ -870,14 +954,15 @@ final class VMModel: ObservableObject {
         probeTask = nil
         bootNudgeTask?.cancel()
         bootNudgeTask = nil
-        append(diagnostic: "guest answered the readiness probe")
+        append(diagnostic: "guest app-server initialized")
+        refreshCodexStatus()
         pushProvisionState()
         // The machine is usable, so the account's model list can be asked for.
         // It may legitimately fail until the user signs in; that answer is
         // reported to the frontend rather than papered over with a guess.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            guard let self, self.models.isEmpty else { return }
+            guard let self, self.isRunning, self.codexReady else { return }
             self.requestModels()
         }
     }
@@ -1038,11 +1123,15 @@ enum ConsoleText {
     /// `-c` overrides the guest's own configuration for this run only, which is
     /// exactly what the picker in the frontend promises: a model, a reasoning
     /// level, and optionally the faster service tier, for the next prompt.
-    static func execCommand(_ text: String, selection: ModelSelection) -> String {
+    static func execCommand(_ text: String, selection: ModelSelection, threadID: String? = nil) -> String {
         var parts = ["codex", "exec"]
+        if threadID != nil { parts.append("resume") }
+        parts.append("--json --skip-git-repo-check")
         if let model = selection.model { parts.append("--model \(shellQuoted(model))") }
         if let effort = selection.effort { parts.append("-c model_reasoning_effort=\(shellQuoted(effort))") }
         if selection.fast { parts.append("-c service_tier=fast") }
+        if let threadID { parts.append(shellQuoted(threadID)) }
+        parts.append("--")
         parts.append(shellQuoted(text))
         return parts.joined(separator: " ")
     }

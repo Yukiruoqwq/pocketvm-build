@@ -16,7 +16,7 @@ BASE="${POCKETVM_BASE:-http://10.0.2.2:8474}"
 LIB=/usr/local/lib/pocketvm
 
 post() { # path, body
-  curl -fsS -m 20 -H 'Content-Type: application/json' -X POST "$BASE/$1" -d "$2" >/dev/null 2>&1 || true
+  curl --noproxy '*' -fsS -m 20 -H 'Content-Type: application/json' -X POST "$BASE/$1" -d "$2" >/dev/null 2>&1 || true
 }
 
 # The host's 正在启动 Codex CLI line hangs off this: the guest's own system is up
@@ -89,16 +89,17 @@ EOF
   # The boot report. Written here as well as at install time so that a guest set
   # up by an older build gets it without being reinstalled.
   UNIT=/etc/systemd/system/pocketvm-report.service
-  if [ ! -f "$UNIT" ]; then
+  if [ -x /usr/local/sbin/pocketvm-report ]; then
     cat >"$UNIT" <<'EOF'
 [Unit]
 Description=PocketVM boot report
-After=multi-user.target network-online.target
+After=network-online.target cloud-final.service
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+TimeoutStartSec=1800
 ExecStart=/usr/local/sbin/pocketvm-report
 
 [Install]
@@ -141,3 +142,18 @@ EOF
 }
 
 install_console >/dev/null 2>&1 &
+# cloud-init runcmd is once per instance. Resume interrupted package installation
+# after cloud-final, without deleting the guest disk or racing its first run.
+if [ -f /usr/local/sbin/pocketvm-provision.sh ]; then
+  cat >/etc/systemd/system/pocketvm-repair.service <<'EOF'
+[Unit]
+Description=Resume incomplete PocketVM installation
+After=cloud-final.service network-online.target
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'test -f /var/lib/pocketvm/install-complete && timeout 30 codex --version >/dev/null 2>&1 && command -v node >/dev/null && test -x /usr/local/bin/pocketvm-agent && test -s /usr/local/lib/pocketvm/pocketvm-app.mjs || /usr/local/sbin/pocketvm-provision.sh'
+TimeoutStartSec=1800
+EOF
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  systemctl start --no-block pocketvm-repair.service >/dev/null 2>&1 || true
+fi
