@@ -94,6 +94,9 @@ final class VMModel: ObservableObject {
         provisioner.onLog = { [weak self] line in
             Task { @MainActor in self?.append(diagnostic: line) }
         }
+        provisioner.onGuestReport = { [weak self] path, body in
+            Task { @MainActor in self?.handleGuestReport(path: path, body: body) }
+        }
         provisioner.onFinished = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
@@ -248,10 +251,56 @@ final class VMModel: ObservableObject {
             append(diagnostic: "no helper server is running")
             return
         }
+        // Installing the reporter is also how the list is asked for: it reports
+        // the models it finds as soon as it runs.
         append(diagnostic: "asking the guest for its model list")
-        host.writeToConsole(
-            "curl -fsS \(base)/pocketvm-models.mjs -o /tmp/pocketvm-models.mjs && node /tmp/pocketvm-models.mjs\n"
-        )
+        host.writeToConsole(bootstrapCommand(base: base) + "\n")
+    }
+
+    // MARK: - 客户机的上报
+
+    /// The guest telling the host something over HTTP.
+    ///
+    /// This is what the serial console used to be for. A path and a JSON body
+    /// have no echo to mistake for an answer, no CR LF to trim by accident and
+    /// no escape sequences to strip — all three of which the console version got
+    /// wrong at least once.
+    private func handleGuestReport(path: String, body: Data) {
+        let text = String(decoding: body, as: UTF8.self)
+        append(diagnostic: "guest reported \(path) \(text.prefix(160))")
+        switch path {
+        case "/ready":
+            markCodexReady()
+        case "/models":
+            applyModels(from: body)
+        default:
+            break
+        }
+    }
+
+    /// The one line the host types when the guest has no reporter yet: fetch it
+    /// from the host and install it. After that the guest announces its own boot
+    /// and nothing has to be typed at the console again.
+    private func bootstrapCommand(base: String) -> String {
+        "curl -fsS \(base)/pocketvm-report.sh -o /tmp/pocketvm-report.sh"
+            + " && sudo bash /tmp/pocketvm-report.sh --install"
+    }
+
+    /// Ends in the same state whichever path delivered the list.
+    private func applyModels(from data: Data) {
+        if let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            models = list
+            modelsError = nil
+            append(diagnostic: "guest reported \(list.count) model(s)")
+            pushModels()
+            return
+        }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let reason = object["error"] as? String {
+            models = []
+            modelsError = reason
+            pushModels()
+        }
     }
 
     func pushModels() {
@@ -271,14 +320,8 @@ final class VMModel: ObservableObject {
             pushModels()
             return
         }
-        guard let data = rest.data(using: .utf8),
-              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return
-        }
-        models = list
-        modelsError = nil
-        append(diagnostic: "guest reported \(list.count) model(s)")
-        pushModels()
+        guard let data = rest.data(using: .utf8) else { return }
+        applyModels(from: data)
     }
 
     // MARK: - Lifecycle
@@ -442,8 +485,17 @@ final class VMModel: ObservableObject {
             bootDetail = "正在启动 Codex CLI"
             pushProvisionState()
         }
-        append(diagnostic: "readiness probe sent")
-        host.writeToConsole(Self.probeCommand + "\n")
+        // A guest installed by this build reports its own boot over HTTP, so
+        // this is only the migration path: teach an older guest to do the same,
+        // and it will answer over the channel rather than through the terminal.
+        guard let base = provisioner.helperBaseURL else {
+            // No channel to teach: the old line at least still gets an answer
+            // from a guest that was already migrated by hand.
+            host.writeToConsole(Self.probeCommand + "\n")
+            return
+        }
+        append(diagnostic: "teaching the guest to report its own boot")
+        host.writeToConsole(bootstrapCommand(base: base) + "\n")
     }
 
     private func markCodexReady() {
@@ -460,7 +512,8 @@ final class VMModel: ObservableObject {
         // reported to the frontend rather than papered over with a guess.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
-            self?.requestModels()
+            guard let self, self.models.isEmpty else { return }
+            self.requestModels()
         }
     }
 

@@ -109,6 +109,15 @@ final class Provisioner: ObservableObject {
 
     var isProvisioned: Bool { state.completed }
 
+    /// The port the guest reports to. Fixed rather than chosen per boot, because
+    /// the guest's boot-time reporter has to know it without being told — that
+    /// is the point of having a channel at all.
+    static let helperPort: UInt16 = 8474
+
+    /// Called with the body of every POST from the guest. This, not the console,
+    /// is how the guest is heard from.
+    var onGuestReport: ((String, Data) -> Void)?
+
     /// Where the guest reaches the host's own helper files.
     ///
     /// QEMU's user-mode networking makes `10.0.2.2` an alias for the host's
@@ -290,12 +299,8 @@ final class Provisioner: ObservableObject {
     /// Starts the listener the guest fetches both cloud-init's seed and the
     /// helper scripts from.
     private func startHelperServer() throws -> SeedServer {
-        let server = try SeedServer(preferredPort: 0)
-        server.onLog = { [weak self] line in self?.onLog?("seed: \(line)") }
-        server.onRequest = { [weak self] path in self?.onLog?("guest asked for \(path)") }
-
         var resources: [String: SeedServer.Resource] = [:]
-        for name in ["pocketvm-models.mjs"] {
+        for name in ["pocketvm-models.mjs", "pocketvm-report.sh"] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
                 continue
@@ -310,8 +315,30 @@ final class Provisioner: ObservableObject {
             resources["/vendor-data"] = .text("#cloud-config\n")
         }
 
+        // The fixed port is what a guest installed by this build already knows;
+        // if something else on the device holds it, an ephemeral one still lets
+        // the console fallback do the work.
+        if let server = try? SeedServer(preferredPort: Self.helperPort) {
+            configure(server)
+            do {
+                try server.start(resources: resources)
+                return server
+            } catch {
+                onLog?("helper port \(Self.helperPort) is taken: \(error)")
+            }
+        }
+        let server = try SeedServer(preferredPort: 0)
+        configure(server)
         try server.start(resources: resources)
         return server
+    }
+
+    private func configure(_ server: SeedServer) {
+        server.onLog = { [weak self] line in self?.onLog?("helper: \(line)") }
+        server.onRequest = { [weak self] line in self?.onLog?("guest: \(line)") }
+        // The report is the guest talking, so it is logged as such rather than
+        // as a seed fetch.
+        server.onPost = { [weak self] path, body in self?.onGuestReport?(path, body) }
     }
 
     private static func bundledGuestFile(_ name: String) -> String? {
@@ -503,6 +530,15 @@ final class Provisioner: ObservableObject {
         if command -v codex >/dev/null 2>&1; then
           say "Codex $(codex --version 2>/dev/null | head -n 1)"
           grow
+          # From here on the guest reports its own boot to the host over HTTP,
+          # so the host never has to read a ready state out of this console —
+          # the console echoes what is typed into it, which is exactly the trap
+          # this replaces.
+          if curl -fsS -m 30 "http://10.0.2.2:\(Self.helperPort)/pocketvm-report.sh" \
+              -o /tmp/pocketvm-report.sh 2>/dev/null; then
+            bash /tmp/pocketvm-report.sh --install >/dev/null 2>&1 \\
+              || say "上报服务安装失败，下次启动主机仍会用串口确认一次"
+          fi
           echo POCKETVM_READY >"$TTY"
         else
           say "安装未完成"
