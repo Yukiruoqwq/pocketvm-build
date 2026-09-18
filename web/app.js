@@ -996,7 +996,10 @@ function gateCard(phase) {
     return {
       icon: GATE_ICON_DOWNLOAD,
       title: "安装中",
-      facts: [provision.detail || provision.stage, gateStep()],
+      // The host's stage line first: while the guest is installing, that is the
+      // guest's own progress ("POCKETVM: 安装基础软件"), and the boot-phase
+      // label the probe writes is about a boot that has not happened yet.
+      facts: [provision.stage || provision.detail, gateStep()],
       progress: typeof provision.fraction === "number" ? provision.fraction : null,
       actions: [{ label: "安装中", kind: "status" }],
     };

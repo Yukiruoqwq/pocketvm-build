@@ -728,7 +728,11 @@ final class VMModel: ObservableObject {
     }
 
     private func sendProbe() {
-        if bootDetail != "正在启动 Codex CLI" {
+        // Only a machine that is already installed has a Codex CLI to wait for.
+        // During the first run the guest is installing it, and overwriting the
+        // card's line there would hide the guest's own progress behind a label
+        // about a boot that has not happened yet.
+        if provisioner.isProvisioned, bootDetail != "正在启动 Codex CLI" {
             bootDetail = "正在启动 Codex CLI"
             pushProvisionState()
         }
