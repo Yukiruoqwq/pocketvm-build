@@ -58,6 +58,8 @@ jobs:
           "$RUNNER_TEMP/channel-tests"
           xcrun swiftc -parse-as-library Sources/VMConfiguration.swift Sources/ExecutionMode.swift Sources/BootProgress.swift scripts/test-runtime-settings.swift -o "$RUNNER_TEMP/settings-tests"
           "$RUNNER_TEMP/settings-tests"
+          xcrun swiftc -parse-as-library Sources/QMPMessages.swift scripts/test-qmp.swift -o "$RUNNER_TEMP/qmp-tests"
+          "$RUNNER_TEMP/qmp-tests"
 
       - name: Fetch prebuilt runtime
         if: ${{ !inputs.build_runtime }}

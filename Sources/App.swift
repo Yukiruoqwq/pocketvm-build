@@ -34,6 +34,7 @@ final class VMModel: ObservableObject {
     /// The line the gate shows while the machine is coming up.
     @Published private(set) var bootDetail = ""
     private var bootProgress = BootProgress()
+    private var bootStartedAt: TimeInterval = 0
     @Published var diagnostics: [String] = []
     @Published var configurationSummary: String = ""
     /// Authoritative VM description. The frontend only ever sees a copy.
@@ -116,8 +117,16 @@ final class VMModel: ObservableObject {
         host.onLog = { [weak self] line in
             Task { @MainActor in self?.append(diagnostic: line) }
         }
-        host.onInitialized = { [weak self] in
+        host.onGuestRunning = { [weak self] in
             Task { @MainActor in self?.advanceBoot(to: .system) }
+        }
+        host.onBootStatusError = { [weak self] reason in
+            Task { @MainActor in
+                guard let self, self.isRunning, !self.codexReady else { return }
+                self.bootDetail = reason
+                self.append(diagnostic: reason)
+                self.pushProvisionState()
+            }
         }
         host.onExit = { [weak self] status in
             Task { @MainActor in
@@ -510,9 +519,16 @@ final class VMModel: ObservableObject {
         advanceBoot(to: .system)
     }
 
+    private func logBootPhase() {
+        let elapsed = ProcessInfo.processInfo.systemUptime - bootStartedAt
+        append(diagnostic: String(format: "boot phase %@ at +%.3f seconds", bootProgress.phase.code, elapsed))
+    }
+
     private func advanceBoot(to phase: BootProgress.Phase) {
         guard (starting || isRunning), !stopping, !codexReady else { return }
+        let previous = bootProgress.phase
         bootProgress.advance(to: phase)
+        if previous != bootProgress.phase { logBootPhase() }
         bootDetail = bootProgress.phase.detail
         pushProvisionState()
     }
@@ -538,6 +554,8 @@ final class VMModel: ObservableObject {
         starting = true
         codexReady = false
         bootProgress = BootProgress()
+        bootStartedAt = ProcessInfo.processInfo.systemUptime
+        logBootPhase()
         bootDetail = bootProgress.phase.detail
         executionMode = .select(jitAvailable: JIT.isDebugged)
         pushProvisionState()
@@ -686,6 +704,7 @@ final class VMModel: ObservableObject {
         // A real guest JSON-RPC handshake also proves that direct boot succeeded.
         provisioner.acknowledgeSystemBoot()
         bootProgress.advance(to: .ready)
+        logBootPhase()
         guard !codexReady else { return }
         codexReady = true
         bootDetail = ""

@@ -77,8 +77,9 @@ final class QEMUHost {
     var onLog: ((String) -> Void)?
     /// Called when the guest stops, with the process exit status.
     var onExit: ((Int32) -> Void)?
-    /// qemu_init returned; guest execution is about to begin.
-    var onInitialized: (() -> Void)?
+    /// QMP confirms that the VM is running, independently of qemu_init.
+    var onGuestRunning: (() -> Void)?
+    var onBootStatusError: ((String) -> Void)?
 
     private var serialHostFd: Int32 = -1
     private var serialReadSource: DispatchSourceRead?
@@ -221,11 +222,11 @@ final class QEMUHost {
             let status = QEMUHost.runQEMU(
                 argv: argv,
                 onInitialized: { [weak self] in
-                    DispatchQueue.main.async { [weak self] in self?.onInitialized?() }
                     guard let self, self.qmpHostFd >= 0 else { return }
-                    QEMUHost.growDisk(fd: self.qmpHostFd, resize: profile.resize) { line in
-                        DispatchQueue.main.async { self.log(line) }
-                    }
+                    QEMUHost.prepareMonitor(fd: self.qmpHostFd, resize: profile.resize,
+                        log: { line in DispatchQueue.main.async { self.log(line) } },
+                        running: { DispatchQueue.main.async { self.onGuestRunning?() } },
+                        failed: { reason in DispatchQueue.main.async { self.onBootStatusError?(reason) } })
                 },
                 qemuInit: qemuInit,
                 qemuMainLoop: qemuMainLoop,
@@ -623,56 +624,53 @@ final class QEMUHost {
     /// retried by the guest's own provisioning script, and a machine that cannot
     /// be asked to stop is left running instead of being crashed by a second
     /// `qemu_init`.
-    private static func growDisk(
+    private static func prepareMonitor(
         fd: Int32,
         resize: BootProfile.Resize?,
-        log: @escaping (String) -> Void
+        log: @escaping (String) -> Void,
+        running: @escaping () -> Void,
+        failed: @escaping (String) -> Void
     ) {
         DispatchQueue.global(qos: .utility).async {
-            // The greeting and the capability negotiation are a conversation on
-            // the one monitor, so they are held under the same lock as every
-            // later command.
             monitorLock.lock()
             defer { monitorLock.unlock() }
-            guard let greeting = readMonitorLine(fd: fd, timeout: 10) else {
-                log("qmp: 模拟器没有问候")
+            var messages = QMPMessages()
+            func read(timeout: TimeInterval, matching: ([String: Any]) -> Bool) -> [String: Any]? {
+                let deadline = ProcessInfo.processInfo.systemUptime + timeout
+                while ProcessInfo.processInfo.systemUptime < deadline {
+                    while let message = messages.next() {
+                        if matching(message) { return message }
+                    }
+                    if let chunk = readAvailable(fd: fd, timeoutMilliseconds: 200) { messages.append(chunk) }
+                }
+                return nil
+            }
+            func request(_ command: String, id: String, arguments: [String: Any] = [:], timeout: TimeInterval = 10) -> [String: Any]? {
+                let body: [String: Any] = ["execute": command, "id": id, "arguments": arguments]
+                guard let data = try? JSONSerialization.data(withJSONObject: body) else { return nil }
+                writeAll(fd: fd, data: data + Data([10]))
+                return read(timeout: timeout) { $0["id"] as? String == id }
+            }
+            guard read(timeout: 15, matching: { $0["QMP"] is [String: Any] }) != nil,
+                  let capabilities = request("qmp_capabilities", id: "capabilities"),
+                  capabilities["return"] != nil else {
+                failed("QEMU 控制通道连接失败")
                 return
             }
-            log("qmp: \(greeting)")
-
-            sendMonitor(fd: fd, command: "{\"execute\":\"qmp_capabilities\"}\n")
-            if let reply = readMonitorLine(fd: fd, timeout: 5) { log("qmp: \(reply)") }
-
-            guard let resize else { return }
-            let bytes = Int64(resize.sizeGiB) * 1_073_741_824
-            // `node-name` addresses the block node the drive declared. The older
-            // `device` spelling only finds a name that a BlockBackend owns, which
-            // a `-blockdev` node is not.
-            sendMonitor(
-                fd: fd,
-                command: "{\"execute\":\"block_resize\",\"arguments\":{\"node-name\":\"\(resize.node)\",\"size\":\(bytes)}}\n"
-            )
-            if let reply = readMonitorLine(fd: fd, timeout: 30) { log("qmp: \(reply)") }
-        }
-    }
-
-    /// One complete line from the monitor, or nil once the timeout passes.
-    private static func readMonitorLine(fd: Int32, timeout: TimeInterval) -> String? {
-        let deadline = Date().addingTimeInterval(timeout)
-        var buffer = Data()
-        while Date() < deadline {
-            if let chunk = readAvailable(fd: fd, timeoutMilliseconds: 400) {
-                buffer.append(chunk)
+            if let resize {
+                let reply = request("block_resize", id: "resize", arguments: [
+                    "node-name": resize.node, "size": Int64(resize.sizeGiB) * 1_073_741_824
+                ], timeout: 30)
+                log(reply?["return"] != nil ? "qmp: disk resize acknowledged" : "qmp: disk resize failed")
             }
-            while let newline = buffer.firstIndex(of: 0x0A) {
-                let line = Data(buffer[buffer.startIndex..<newline])
-                buffer = Data(buffer[buffer.index(after: newline)...])
-                let text = String(decoding: line, as: UTF8.self)
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty { return text }
+            guard let reply = request("query-status", id: "boot-status"),
+                  QMPMessages.running(reply, id: "boot-status") else {
+                failed("QEMU 尚未确认运行状态")
+                return
             }
+            log("qmp: query-status confirmed running")
+            running()
         }
-        return nil
     }
 
     /// One monitor command. The monitor is a text protocol on a socket pair the
