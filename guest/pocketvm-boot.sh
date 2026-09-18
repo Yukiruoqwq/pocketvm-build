@@ -2,14 +2,21 @@
 set -u
 BASE="${POCKETVM_BASE:-http://10.0.2.2:8474}"
 LIB=/usr/local/lib/pocketvm
+queue_ssh() {
+  ssh-keygen -A || return 1
+  systemctl enable ssh.service || return 1
+  # bootcmd runs inside cloud-init's network initialization. Waiting here for
+  # ssh's After=network.target job prevents that target from being reached.
+  systemctl start --no-block ssh.service
+}
 curl --noproxy '*' -fsS -m 10 -H 'Content-Type: application/json' -d '{"stage":"booting"}' "$BASE/boot" >/dev/null || true
 install -d "$LIB" || exit 1
 # Port 22 is exposed by the host only when the developer switch is enabled.
 if curl --noproxy '*' -fsS -m 20 "$BASE/developer.json" -o /run/pocketvm-developer.json; then
   if python3 -c 'import json,sys; sys.exit(0 if json.load(open("/run/pocketvm-developer.json")).get("ssh") is True else 1)'; then
     # SSH failure must not prevent the Codex relay from starting.
-    if ssh-keygen -A && systemctl enable --now ssh.service; then
-      curl --noproxy '*' -fsS -m 10 -H 'Content-Type: application/json' -d '{"ok":true}' "$BASE/ssh" >/dev/null || true
+    if queue_ssh; then
+      curl --noproxy '*' -fsS -m 10 -H 'Content-Type: application/json' -d '{"state":"queued"}' "$BASE/ssh" >/dev/null || true
     else
       curl --noproxy '*' -fsS -m 10 -H 'Content-Type: application/json' -d '{"ok":false}' "$BASE/ssh" >/dev/null || true
     fi
