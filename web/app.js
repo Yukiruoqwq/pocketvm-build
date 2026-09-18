@@ -226,6 +226,37 @@ function renderPlan() {
   });
 }
 
+// ------------------------------------------------------------ 侧边面板
+
+// 计划 / 输出内容 / 来源. Closed by default: a new conversation has none of the
+// three, and an empty column is not a panel. It opens by itself once there is
+// something in it, on a window wide enough to have a column to open — on the
+// tablet the same panel is a drawer that would cover the conversation.
+let sidePanelChoice = null;
+
+const isNarrow = () => window.matchMedia("(max-width: 1100px)").matches;
+
+function sidePanelHasContent() {
+  return !state.provision.provisioned || state.outputs.length > 0 || Boolean(state.provision.source);
+}
+
+function sidePanelOpen() {
+  return isNarrow() ? $("app").classList.contains("panel-open") : !$("app").classList.contains("no-panel");
+}
+
+function setSidePanel(open) {
+  if (isNarrow()) $("app").classList.toggle("panel-open", open);
+  else $("app").classList.toggle("no-panel", !open);
+  $("toggleSidePanel").setAttribute("aria-pressed", open ? "true" : "false");
+  $("menuSidePanel").checked = open;
+}
+
+/// The user's own choice wins. Until there is one, the panel follows its
+/// content instead of being permanently on or permanently in the way.
+function syncSidePanel() {
+  setSidePanel(sidePanelChoice ?? (!isNarrow() && sidePanelHasContent()));
+}
+
 function renderOutputs() {
   const list = $("outputList");
   list.innerHTML = "";
@@ -235,6 +266,7 @@ function renderOutputs() {
     row.appendChild(el("span", "size", item.size));
     list.appendChild(row);
   }
+  syncSidePanel();
 }
 
 function renderSources() {
@@ -1008,14 +1040,8 @@ function wireChrome() {
 
   // 显示/隐藏侧边面板 — thread.sidePanel.toggle, the right column.
   $("toggleSidePanel").addEventListener("click", () => {
-    if (window.matchMedia("(max-width: 1100px)").matches) {
-      app.classList.toggle("panel-open");
-    } else {
-      app.classList.toggle("no-panel");
-    }
-    const open = !app.classList.contains("no-panel");
-    $("toggleSidePanel").setAttribute("aria-pressed", open ? "true" : "false");
-    $("menuSidePanel").checked = open;
+    sidePanelChoice = !sidePanelOpen();
+    setSidePanel(sidePanelChoice);
   });
 
   // 底部面板 — where the app keeps its terminal tabs.
@@ -1030,15 +1056,15 @@ function wireChrome() {
   $("closeBottomPanel").addEventListener("click", () => setBottomPanel(false));
   $("menuBottomPanel").addEventListener("change", (event) => setBottomPanel(event.target.checked));
   $("menuSidePanel").addEventListener("change", (event) => {
-    app.classList.toggle("no-panel", !event.target.checked);
-    $("toggleSidePanel").setAttribute("aria-pressed", event.target.checked ? "true" : "false");
+    sidePanelChoice = event.target.checked;
+    setSidePanel(sidePanelChoice);
   });
 
   const headerMenu = $("headerMenuPanel");
   $("headerMenu").addEventListener("click", () => {
     headerMenu.hidden = !headerMenu.hidden;
     $("menuBottomPanel").checked = !$("bottomPanel").hidden;
-    $("menuSidePanel").checked = !app.classList.contains("no-panel");
+    $("menuSidePanel").checked = sidePanelOpen();
   });
   document.addEventListener("click", (event) => {
     if (headerMenu.hidden) return;
@@ -1370,6 +1396,8 @@ function main() {
   wireComposer();
   wireChrome();
   ensureTerminal();
+  // Rotating the tablet changes whether the panel has a column of its own.
+  window.addEventListener("resize", () => syncSidePanel());
 
   if (preview) {
     setTerminalState("预览");
