@@ -36,16 +36,11 @@ if fetch pocketvm-report.sh /usr/local/sbin/pocketvm-report; then
 fi
 fetch pocketvm-app.mjs "$LIB/pocketvm-app.mjs" || true
 
-# A machine that was killed leaves GRUB's recordfail set, and Debian's boot
-# loader then stops at its menu and waits for a key nothing on this device can
-# press. Three seconds is long enough to pick a different entry and short enough
-# that a boot never looks like it hung.
-GRUB_DROPIN=/etc/default/grub.d/pocketvm.cfg
-if [ -d /etc/default/grub.d ] && [ ! -f "$GRUB_DROPIN" ]; then
-  printf 'GRUB_RECORDFAIL_TIMEOUT=3\n' >"$GRUB_DROPIN"
-  update-grub >/dev/null 2>&1 || true
-fi
-# And clear whatever the boot that just happened left behind.
+# The app boots this kernel directly, so the boot loader is normally not in the
+# path at all. It is still cleared here: a machine that was killed leaves GRUB's
+# recordfail set, and if anything ever boots through it again — an older build,
+# a missing kernel file — Debian's boot loader would stop at its menu and wait
+# for a key that nothing on a tablet can press.
 if command -v grub-editenv >/dev/null 2>&1 && [ -f /boot/grub/grubenv ]; then
   grub-editenv /boot/grub/grubenv unset recordfail >/dev/null 2>&1 || true
 fi

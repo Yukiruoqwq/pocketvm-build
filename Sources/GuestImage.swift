@@ -21,6 +21,36 @@ struct GuestImage {
         GuestImage.imagesDirectory.appendingPathComponent(fileName)
     }
 
+    /// Everything QEMU needs to start this image's kernel without its firmware
+    /// and without its boot loader.
+    ///
+    /// The two files are the image's own, copied out once, so the modules under
+    /// `/lib/modules` inside the guest match the kernel exactly. Booting this
+    /// way removes the only part of the machine that can stop and wait for a
+    /// person: Debian's GRUB does that after an unclean shutdown, and a tablet
+    /// has no keyboard to give it. It is also faster — the firmware and the boot
+    /// loader never run — and the serial console is printing a second after
+    /// power-on instead of twenty.
+    struct DirectBoot {
+        /// Relative to Documents/, the same way every other drive path is.
+        let kernel: String
+        let initrd: String
+        let cmdline: String
+    }
+
+    var directBoot: DirectBoot {
+        DirectBoot(
+            kernel: "boot/vmlinuz-6.12.107+deb13-cloud-arm64",
+            initrd: "boot/initrd.img-6.12.107+deb13-cloud-arm64",
+            cmdline: "root=PARTUUID=\(rootPartUUID) ro console=ttyAMA0,115200"
+        )
+    }
+
+    /// The root partition's UUID, as the image was built with it. It is what
+    /// the kernel is told to mount when it is handed a command line instead of
+    /// GRUB's own menu entry.
+    var rootPartUUID: String { "51ebe23a-142a-4f1c-adb3-f4647ac4c9a7" }
+
     static var imagesDirectory: URL {
         let base = VMConfiguration.documentsDirectory.appendingPathComponent("Images", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)

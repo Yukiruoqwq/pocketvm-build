@@ -150,9 +150,9 @@ final class Provisioner: ObservableObject {
         excludeFromBackup()
         try installUEFIVariables()
         var configuration = try VMConfiguration.loadOrCreateDefault()
-        configuration.drives = defaultDrives(existing: configuration)
         configuration.name = "Debian 13 · aarch64"
-        configuration.boot = VMConfiguration.Boot(mode: .uefi)
+        configuration.boot = bootConfiguration()
+        configuration.drives = defaultDrives(existing: configuration, boot: configuration.boot)
         configuration = configuration.validated()
         try configuration.write()
 
@@ -272,21 +272,58 @@ final class Provisioner: ObservableObject {
         try contents.write(to: destination, options: .atomic)
     }
 
-    private func defaultDrives(existing: VMConfiguration) -> [VMConfiguration.Drive] {
-        var drives: [VMConfiguration.Drive] = [
-            VMConfiguration.Drive(
-                path: "efi_vars.fd",
-                interface: .pflash,
-                readOnly: false
-            ),
+    /// How this boot starts the guest.
+    ///
+    /// The kernel and the initrd are the image's own, copied out of its root
+    /// filesystem once. When they are there, the machine boots them directly:
+    /// the firmware and the boot loader never run, so there is nothing that can
+    /// stop at a menu and wait for a key that a tablet cannot press, and the
+    /// console starts printing within a second instead of twenty. Without them
+    /// the machine still boots the way it always did.
+    private func bootConfiguration() -> VMConfiguration.Boot {
+        let documents = VMConfiguration.documentsDirectory
+        let direct = image.directBoot
+        let kernel = documents.appendingPathComponent(direct.kernel)
+        let initrd = documents.appendingPathComponent(direct.initrd)
+        guard FileManager.default.fileExists(atPath: kernel.path),
+              FileManager.default.fileExists(atPath: initrd.path) else {
+            return VMConfiguration.Boot(mode: .uefi)
+        }
+        onLog?("booting the guest's own kernel directly")
+        return VMConfiguration.Boot(
+            mode: .direct,
+            kernel: direct.kernel,
+            initrd: direct.initrd,
+            cmdline: direct.cmdline
+        )
+    }
+
+    private func defaultDrives(
+        existing: VMConfiguration,
+        boot: VMConfiguration.Boot
+    ) -> [VMConfiguration.Drive] {
+        var drives: [VMConfiguration.Drive] = []
+        // The variable store belongs to the firmware, and a pflash device with
+        // no firmware in front of it is a device QEMU would have to invent a
+        // pairing for.
+        if boot.mode != .direct {
+            drives.append(
+                VMConfiguration.Drive(
+                    path: "efi_vars.fd",
+                    interface: .pflash,
+                    readOnly: false
+                )
+            )
+        }
+        drives.append(
             VMConfiguration.Drive(
                 path: "Images/\(image.fileName)",
                 interface: .virtio,
                 readOnly: false,
                 format: "qcow2",
                 nodeName: "root"
-            ),
-        ]
+            )
+        )
         // Keep drives the user added beyond the two we manage.
         for drive in existing.drives where drive.interface != .pflash && drive.nodeName != "root" {
             if !drives.contains(where: { $0.path == drive.path }) { drives.append(drive) }
