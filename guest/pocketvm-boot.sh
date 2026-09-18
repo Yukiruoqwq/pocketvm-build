@@ -93,7 +93,7 @@ EOF
     cat >"$UNIT" <<'EOF'
 [Unit]
 Description=PocketVM boot report
-After=network-online.target cloud-final.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -107,7 +107,9 @@ WantedBy=multi-user.target
 EOF
     timeout 20 systemctl daemon-reload >/dev/null 2>&1 || true
   fi
+  timeout 20 systemctl disable --now pocketvm-ready.service >/dev/null 2>&1 || true
   timeout 20 systemctl enable pocketvm-report.service >/dev/null 2>&1 || true
+  timeout 20 systemctl start --no-block pocketvm-report.service >/dev/null 2>&1 || true
 
   # The command agent: the app's way in that does not depend on a shell sitting
   # at a prompt. It runs as root, which is what the sign-in helper needs.

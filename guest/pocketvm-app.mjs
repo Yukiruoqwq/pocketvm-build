@@ -58,7 +58,7 @@ function finish() {
   if (done) return;
   done = true;
   clearTimeout(timer);
-  const payload = only ? results[wanted[0]?.[0]] ?? { error: results.error ?? "未收到 app-server 响应" } : results;
+  const payload = only === "--health" ? results : only ? results[wanted[0]?.[0]] ?? { error: results.error ?? "未收到 app-server 响应" } : results;
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   try {
     child.kill("SIGKILL");
@@ -85,7 +85,7 @@ function ask() {
       ? { includeHidden: true, cursor: null, limit: 100 }
       : method === "thread/list"
         ? { limit: 20 }
-        : undefined;
+        : {};
   pendingId = nextRequestId++;
   send({ jsonrpc: "2.0", id: pendingId, method, params });
 }
@@ -117,7 +117,7 @@ child.stdout.on("data", (chunk) => {
       }
       results.initialized = true;
       send({ jsonrpc: "2.0", method: "initialized" });
-      ask();
+      if (only === "--health") finish(); else ask();
       continue;
     }
     if (message.id !== pendingId || !pending) continue;

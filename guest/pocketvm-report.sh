@@ -88,7 +88,7 @@ install_self() {
 [Unit]
 Description=PocketVM boot report
 Documentation=https://github.com/abasbdjasdl/pocketvm-build
-After=network-online.target cloud-final.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -109,8 +109,20 @@ report() {
   # pocketvm-boot.sh sends this earlier in the boot, and this is the fallback for
   # a guest that has not picked that script up yet.
   post boot '{"stage":"booting"}'
-  command -v codex >/dev/null 2>&1 || return 1
-  version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
+  if ! command -v codex >/dev/null 2>&1; then
+    post boot-error '{"error":"Codex CLI 未安装完成"}'
+    return 1
+  fi
+  if ! timeout 75 runuser -u codex -- env HOME=/home/codex node "$LIB/pocketvm-app.mjs" --health >/tmp/pocketvm-health.json 2>/tmp/pocketvm-health.log; then
+    post boot-error '{"error":"CLI 启动检查失败，请查看 /tmp/pocketvm-health.log"}'
+    return 1
+  fi
+  if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.initialized === true ? 0 : 1)' /tmp/pocketvm-health.json; then
+    post ready '{"stage":"ready"}' || return 1
+  else
+    post boot-error "$(cat /tmp/pocketvm-health.json)"
+    return 1
+  fi
   # The proxy must be ready before app-server is contacted. The service runs as
   # root, while the authenticated CLI state belongs to codex; querying as root
   # made every installation look signed out and returned an empty thread list.

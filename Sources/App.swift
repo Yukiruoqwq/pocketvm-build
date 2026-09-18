@@ -490,6 +490,11 @@ final class VMModel: ObservableObject {
             // The guest's own system is up and reachable. Everything left is
             // the CLI inside it, which is the step the gate name refers to.
             noteGuestSystemUp()
+        case "/boot-error":
+            let report = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            bootDetail = report?["error"] as? String ?? "CLI 启动检查失败"
+            appendStatus(bootDetail)
+            pushProvisionState()
         case "/ready":
             guard isRunning else { return }
             markCodexReady()

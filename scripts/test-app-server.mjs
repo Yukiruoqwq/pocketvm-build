@@ -32,3 +32,6 @@ test('timeout produces error instead of empty success',()=>{const h=harness();h.
 test('premature process close is explicit',()=>{const h=harness();h.child.emit('close',1);assert.match(h.outputs[0].error,/提前退出/);});
 test('split JSON chunks are reassembled',()=>{const h=harness('account/read');h.child.stdout.emit('data',Buffer.from('{"id":1,"res'));h.child.stdout.emit('data',Buffer.from('ult":{}}\n'));h.reply(h.sent.at(-1).id,{account:{type:'chatgpt'}});assert.deepEqual(h.outputs,[{account:{type:'chatgpt'}}]);});
 test('method errors remain visible',()=>{const h=harness('thread/read');h.reply(1,{});h.reply(h.sent.at(-1).id,null,{message:'missing thread'});assert.deepEqual(h.outputs,[{error:'missing thread'}]);});
+
+test('health handshake finishes without account requests',()=>{const h=harness('--health');h.reply(1,{});assert.deepEqual(h.outputs,[{initialized:true}]);assert.equal(h.sent.length,2);});
+test('account read sends empty params object',()=>{const h=harness('account/read');h.reply(1,{});assert.deepEqual(h.sent.at(-1).params,{});});

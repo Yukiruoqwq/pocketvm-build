@@ -708,7 +708,7 @@ final class Provisioner: ObservableObject {
             content: |
               [Unit]
               Description=PocketVM readiness marker
-              After=multi-user.target
+              After=network-online.target
 
               [Service]
               Type=oneshot
