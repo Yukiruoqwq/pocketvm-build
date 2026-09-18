@@ -36,6 +36,9 @@ const state = {
     password: "258716",
   },
   auth: { state: "signedIn" },
+  // 外观: settings.general.appearance.theme — 浅色 / 深色 / 跟随系统. The
+  // last one is the system setting the iPad switches by itself.
+  appearance: preview ? localStorage.getItem("pocketvm.appearance") || "system" : "system",
   config: {
     version: 1,
     name: "Debian 13 · aarch64",
@@ -346,12 +349,51 @@ function renderAccount() {
 
 // ---------------------------------------------------------------- settings
 
+// ------------------------------------------------------------------ 外观
+
+const APPEARANCE = [
+  { id: "light", label: "浅色" },
+  { id: "dark", label: "深色" },
+  { id: "system", label: "跟随系统" },
+];
+
+/// Review only: `?theme=light|dark` pins one theme on the preview.
+let forcedTheme = null;
+
+/// The page follows the choice; with 跟随系统 it follows `color-scheme`, which
+/// is the iPad's own setting, so nothing has to poll it.
+function applyAppearance() {
+  const mode = forcedTheme ?? state.appearance;
+  if (mode === "light" || mode === "dark") document.documentElement.dataset.theme = mode;
+  else delete document.documentElement.dataset.theme;
+}
+
+function setAppearance(mode) {
+  state.appearance = mode;
+  forcedTheme = null;
+  applyAppearance();
+  if (preview) localStorage.setItem("pocketvm.appearance", mode);
+  else bridge.send("setAppearance", { theme: mode });
+  renderSettings();
+}
+
+function appearanceControl() {
+  const wrap = el("div", "segmented");
+  for (const option of APPEARANCE) {
+    const node = el("button", state.appearance === option.id ? "active" : "", option.label);
+    node.type = "button";
+    node.addEventListener("click", () => setAppearance(option.id));
+    wrap.appendChild(node);
+  }
+  return wrap;
+}
+
 function rowsFor(page) {
   const cfg = draft ?? state.config;
   if (page === "general") {
     return [
       { group: "外观" },
-      { label: "主题", desc: "跟随 iPad 的系统设置", control: () => el("span", "value", "自动") },
+      { label: "主题", control: appearanceControl },
       { label: "语言", control: () => el("span", "value", "简体中文") },
       { group: "工作空间" },
       { label: "项目", control: () => el("span", "value", "没有项目") },
@@ -733,6 +775,11 @@ window.pocketvmReceive = function (message) {
       break;
     case "authState":
       applyAuthState(message.payload || {});
+      break;
+    case "appearance":
+      state.appearance = message.payload?.theme || "system";
+      applyAppearance();
+      if (!$("settings").hidden) renderSettings();
       break;
     case "config":
       state.config = message.payload || state.config;
@@ -1135,6 +1182,7 @@ function blockZoomGestures() {
 }
 
 function main() {
+  applyAppearance();
   renderModelChip();
   wireModelMenu();
   wireContextMenu();
@@ -1159,13 +1207,17 @@ function main() {
     bridge.send("getMessages");
     bridge.send("getProvisionState");
     bridge.send("getAutomations");
+    bridge.send("getAppearance");
   }
 
   // Review shortcuts: ?panel=1 opens the side panel, ?settings=vm opens that
   // settings page. Useful on a window too narrow for three columns.
   const params = new URLSearchParams(location.search);
   const theme = params.get("theme");
-  if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+  if (theme === "light" || theme === "dark") {
+    forcedTheme = theme;
+    applyAppearance();
+  }
   // Review only: the preview has no machine to start, so the card is picked
   // with the same state the host would have sent.
   if (preview && params.has("gate")) {

@@ -66,7 +66,17 @@ struct WebUIView: UIViewRepresentable {
         var model: VMModel
         weak var webView: WKWebView?
 
+        /// 外观 — a preference of the page, remembered here so it survives a
+        /// relaunch without the machine having to be involved.
+        private static let appearanceKey = "pocketvm.appearance"
+        private static let appearances = ["light", "dark", "system"]
+
         init(model: VMModel) { self.model = model }
+
+        static var storedAppearance: String {
+            let stored = UserDefaults.standard.string(forKey: appearanceKey) ?? "system"
+            return appearances.contains(stored) ? stored : "system"
+        }
 
         func load(into view: WKWebView) {
             guard let dir = Bundle.main.url(forResource: "web", withExtension: nil) else {
@@ -142,6 +152,16 @@ struct WebUIView: UIViewRepresentable {
 
             case "getMessages":
                 reply(["action": "messages", "payload": model.transcriptForUI()])
+
+            case "getAppearance":
+                reply(["action": "appearance", "payload": ["theme": Self.storedAppearance]])
+
+            case "setAppearance":
+                // Validated rather than stored verbatim: the page is not the
+                // authority on what the setting may be.
+                guard let theme = payload?["theme"] as? String,
+                      Self.appearances.contains(theme) else { return }
+                UserDefaults.standard.set(theme, forKey: Self.appearanceKey)
 
             case "prompt":
                 if let text = payload?["text"] as? String {

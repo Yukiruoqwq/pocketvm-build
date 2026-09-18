@@ -584,6 +584,20 @@ ul { margin: 0; padding: 0; list-style: none; }
   padding: 6px 10px; background: var(--bg-raised);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
 }
+/* 主题 — the three-way control the app's own appearance setting uses. */
+.segmented {
+  display: inline-flex; gap: 2px; padding: 2px;
+  background: var(--bg-active); border-radius: var(--radius-sm);
+}
+.segmented button {
+  padding: 5px 10px; border-radius: 4px;
+  font-size: var(--text-sm); color: var(--fg-dim);
+  white-space: nowrap;
+}
+.segmented button.active {
+  background: light-dark(#ffffff, #3a3a3c);
+  color: var(--fg); font-weight: 500;
+}
 .switch { position: relative; width: 38px; height: 22px; flex: none; }
 .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; }
 .switch span {
@@ -629,7 +643,9 @@ ul { margin: 0; padding: 0; list-style: none; }
   display: flex; align-items: center; justify-content: center;
   /* Below the optical centre, the way the app's own empty states sit. */
   padding: 13vh 24px 24px;
-  background: light-dark(rgb(255 255 255 / 10%), rgb(0 0 0 / 16%));
+  /* Barely tinted: the blur is what separates the gate from the app, and a
+     heavier wash is what made it disappear on a light page. */
+  background: light-dark(rgb(255 255 255 / 4%), rgb(0 0 0 / 12%));
   -webkit-backdrop-filter: blur(38px) saturate(180%);
   backdrop-filter: blur(38px) saturate(180%);
   transition: opacity .45s ease, -webkit-backdrop-filter .45s ease, backdrop-filter .45s ease;
