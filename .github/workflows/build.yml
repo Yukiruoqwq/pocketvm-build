@@ -126,7 +126,7 @@ jobs:
           APP="PocketVM.xcarchive/Products/Applications/PocketVM.app"
           test -f "$APP/PocketVM"
           test -f "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu"
-          test -f "$APP/Frameworks/tci-qemu-aarch64-softmmu.framework/tci-qemu-aarch64-softmmu"
+          test -f "$APP/Frameworks/tciu-aarch64-softmmu.framework/tciu-aarch64-softmmu"
           test -f "$APP/qemu/edk2-aarch64-code.fd"
           xcrun lipo "$APP/PocketVM" -verify_arch arm64
           xcrun lipo "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu" -verify_arch arm64

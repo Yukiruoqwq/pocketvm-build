@@ -8,7 +8,7 @@ enum ExecutionMode: String {
     }
 
     var frameworkName: String {
-        self == .jit ? "qemu-aarch64-softmmu" : "tci-qemu-aarch64-softmmu"
+        self == .jit ? "qemu-aarch64-softmmu" : "tciu-aarch64-softmmu"
     }
 
     func accelerator(cacheMiB: Int, multicore: Bool) -> String {
