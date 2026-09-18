@@ -13,6 +13,11 @@ import Network
 /// HTTP instead of scraping the serial console, where the tty's own echo, its
 /// CR LF line endings and its escape sequences all have to be guessed at.
 ///
+/// `PUT /upload/…` carries a file the guest hands over — the kernel and the
+/// initrd the app boots next time. That body is binary, so nothing here decodes
+/// a request into a string before the bytes have been separated from the
+/// headers.
+///
 /// The routes are plain in-memory resources: the seed is a handful of kilobytes
 /// of YAML generated at boot, and writing it to a filesystem would need an
 /// extra drive just to hold it.
@@ -43,6 +48,14 @@ final class SeedServer {
     var onRequest: ((String) -> Void)?
     /// Called with the body of every POST: the guest reporting something.
     var onPost: ((String, Data) -> Void)?
+    /// Called with the body of every upload: a file the guest is handing over.
+    var onUpload: ((String, Data) -> Void)?
+
+    /// A request's body is held in memory while it arrives, and the kernel is
+    /// the largest thing anyone sends. Uploads get room for one; everything
+    /// else is a report and stays small.
+    private static let uploadLimit = 96 * 1024 * 1024
+    private static let reportLimit = 4 * 1024 * 1024
 
     init(preferredPort: UInt16 = 0) throws {
         let parameters = NWParameters.tcp
@@ -134,7 +147,9 @@ final class SeedServer {
             }
             var request = buffer
             if let data { request.append(data) }
-            let tooBig = request.count > 4 * 1024 * 1024
+            let upload = SeedServer.isUpload(request)
+            let limit = upload ? SeedServer.uploadLimit : SeedServer.reportLimit
+            let tooBig = request.count > limit
             if isComplete || tooBig || SeedServer.isComplete(request) {
                 self.respond(on: connection, request: request)
             } else {
@@ -144,14 +159,28 @@ final class SeedServer {
     }
 
     private func respond(on connection: NWConnection, request: Data) {
-        let text = String(decoding: request, as: UTF8.self)
-        let path = SeedServer.requestPath(text)
-        let requestLine = text.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        // Headers are ASCII, the body is not: the split happens on bytes, and
+        // only the header block is ever decoded.
+        guard let separator = SeedServer.headerEnd(of: request),
+              let headerText = String(data: request[request.startIndex..<separator.lowerBound], encoding: .utf8) else {
+            send(connection, status: "400 Bad Request", contentType: "text/plain", body: Data("bad request\n".utf8))
+            return
+        }
+        let path = SeedServer.requestPath(headerText)
+        let requestLine = headerText.split(separator: "\r\n", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
         onRequest?(String(requestLine))
 
+        let body = Data(request[separator.upperBound...])
+        if requestLine.hasPrefix("PUT ") || path.hasPrefix("/upload/") {
+            let name = path.hasPrefix("/upload/")
+                ? String(path.dropFirst("/upload/".count))
+                : String(path.dropFirst())
+            onUpload?(name, body)
+            send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
+            return
+        }
+
         if requestLine.hasPrefix("POST ") {
-            let separator = text.range(of: "\r\n\r\n")
-            let body = separator.map { Data(text[$0.upperBound...].utf8) } ?? Data()
             onPost?(path, body)
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
@@ -178,15 +207,32 @@ final class SeedServer {
     /// True once the headers are in and, if the request declares a body, all of
     /// it has arrived.
     static func isComplete(_ request: Data) -> Bool {
-        guard let text = String(data: request, encoding: .utf8),
-              let separator = text.range(of: "\r\n\r\n") else { return false }
+        guard let separator = headerEnd(of: request),
+              let headerText = String(data: request[request.startIndex..<separator.lowerBound], encoding: .utf8) else {
+            return false
+        }
         var length = 0
-        for line in text[..<separator.lowerBound].split(separator: "\r\n") {
+        for line in headerText.split(separator: "\r\n") {
             let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, parts[0].lowercased() == "content-length" else { continue }
             length = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
         }
-        return text[separator.upperBound...].utf8.count >= length
+        return request.count - request.distance(from: request.startIndex, to: separator.upperBound) >= length
+    }
+
+    /// Where the header block ends, as a range into the request's own bytes.
+    static func headerEnd(of request: Data) -> Range<Data.Index>? {
+        request.range(of: Data("\r\n\r\n".utf8))
+    }
+
+    /// True while the request is still one of the uploads, so the size it is
+    /// allowed to reach can be decided before the body has arrived.
+    static func isUpload(_ request: Data) -> Bool {
+        guard let separator = headerEnd(of: request),
+              let headerText = String(data: request[request.startIndex..<separator.lowerBound], encoding: .utf8) else {
+            return false
+        }
+        return requestPath(headerText).hasPrefix("/upload/")
     }
 
     static func requestPath(_ request: String) -> String {

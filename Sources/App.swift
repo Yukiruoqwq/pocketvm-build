@@ -150,6 +150,13 @@ final class VMModel: ObservableObject {
         reloadConfiguration()
         loadAutomations()
         loadCachedAccount()
+        // Which build is running, in the log: every rebuild keeps the same
+        // bundle version unless this says otherwise, and "did the new one get
+        // installed" has been a real question more than once.
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info?["CFBundleVersion"] as? String ?? "?"
+        append(diagnostic: "PocketVM \(short) (\(build))")
     }
 
     func reloadConfiguration() {

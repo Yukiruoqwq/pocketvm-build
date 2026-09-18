@@ -19,6 +19,30 @@ post() { # path, body
   curl -fsS -m 30 -H 'Content-Type: application/json' -X POST "$BASE/$1" -d "$2" >/dev/null 2>&1 || true
 }
 
+# Hand the app the two files it boots next time, so that from the next start on
+# the firmware and the boot loader never run: nothing can stop at a menu and wait
+# for a key, and the console is printing a second after power-on.
+#
+# They are this machine's own kernel and the initrd built for it, so
+# /lib/modules always matches. The marker holds the version that was sent: a
+# kernel upgrade makes the next boot send the new pair.
+upload_boot_files() {
+  kernel="$(uname -r)"
+  marker=/var/lib/pocketvm/boot-files-sent
+  [ -r "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$kernel" ] && return 0
+  vmlinuz="/boot/vmlinuz-$kernel"
+  initrd="/boot/initrd.img-$kernel"
+  [ -f "$vmlinuz" ] && [ -f "$initrd" ] || return 0
+  # The proxy profile inside the guest is for the outside world; this is the
+  # host on the other end of the emulated network.
+  # No 100-continue: this listener answers once, when it has the whole body.
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$vmlinuz" "$BASE/upload/vmlinuz" >/dev/null 2>&1 || return 0
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$initrd" "$BASE/upload/initrd" >/dev/null 2>&1 || return 0
+  install -d "$(dirname "$marker")" 2>/dev/null || true
+  echo "$kernel" >"$marker"
+  post bootfiles "{\"kernel\":\"$kernel\"}"
+}
+
 install_self() {
   command -v curl >/dev/null 2>&1 || return 1
   install -d "$LIB" || return 1
@@ -61,6 +85,7 @@ report() {
       post report "$(cat /tmp/pocketvm-report.json)"
     fi
   fi
+  upload_boot_files
 }
 
 case "${1:---boot}" in

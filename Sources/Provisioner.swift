@@ -380,6 +380,41 @@ final class Provisioner: ObservableObject {
         // The report is the guest talking, so it is logged as such rather than
         // as a seed fetch.
         server.onPost = { [weak self] path, body in self?.onGuestReport?(path, body) }
+        server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) }
+    }
+
+    /// The guest handing over the two files that let the next start boot its own
+    /// kernel.
+    ///
+    /// Nothing else can produce them: they are the image's own, they have to be
+    /// the running kernel's version to match `/lib/modules`, and a fresh install
+    /// has nobody on the cable to copy them across. A half-written file is worse
+    /// than no file — it would be booted — so the write is atomic and a body
+    /// that is obviously short is refused.
+    private func store(upload name: String, body: Data) {
+        let destination: String
+        switch name {
+        case "vmlinuz": destination = image.directBoot.kernel
+        case "initrd": destination = image.directBoot.initrd
+        default:
+            onLog?("guest uploaded an unknown file: \(name)")
+            return
+        }
+        guard body.count > 1 << 20 else {
+            onLog?("guest's \(name) is too small to be real: \(body.count) bytes")
+            return
+        }
+        let url = VMConfiguration.documentsDirectory.appendingPathComponent(destination)
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try body.write(to: url, options: .atomic)
+            onLog?("guest handed over \(destination): \(body.count) bytes")
+        } catch {
+            onLog?("could not keep \(destination): \(error)")
+        }
     }
 
     private static func bundledGuestFile(_ name: String) -> String? {
