@@ -60,6 +60,19 @@ final class Provisioner: ObservableObject {
         case ready
         case failed(String)
 
+        var code: String {
+            switch self {
+            case .idle: return "idle"
+            case .downloading: return "downloading"
+            case .verifying: return "verifying"
+            case .preparing: return "preparing"
+            case .booting: return "booting"
+            case .installing: return "installing"
+            case .ready: return "ready"
+            case .failed: return "failed"
+            }
+        }
+
         var isActive: Bool {
             switch self {
             case .downloading, .verifying, .preparing, .booting, .installing: return true
@@ -423,6 +436,8 @@ final class Provisioner: ObservableObject {
             }
             resources["/\(name)"] = .text(text)
         }
+        let vmConfig = try VMConfiguration.loadOrCreateDefault().validated()
+        resources["/developer.json"] = .text(vmConfig.developerSSH == true ? "{\"ssh\":true}" : "{\"ssh\":false}")
         // The proxy is the owner's own subscription, so it lives in
         // Documents/proxy.txt on the device rather than in the build: this
         // repository is public, and a subscription link is a credential.
@@ -693,7 +708,7 @@ final class Provisioner: ObservableObject {
 
         say "安装基础软件"
         apt-get $APT_LOCK install -y -qq --no-install-recommends \\
-          curl ca-certificates git jq nodejs npm >>"$LOG" 2>&1 \\
+          curl ca-certificates git jq nodejs npm openssh-server >>"$LOG" 2>&1 \\
           || fail "基础软件安装失败"
 
         if ! command -v node >/dev/null 2>&1; then

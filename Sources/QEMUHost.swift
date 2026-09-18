@@ -123,10 +123,10 @@ final class QEMUHost {
         Bundle.main.bundleURL.appendingPathComponent("qemu", isDirectory: true)
     }
 
-    private var libraryPath: String {
+    private func libraryPath(for mode: ExecutionMode) -> String {
         frameworksDirectory
-            .appendingPathComponent("qemu-\(architecture)-softmmu.framework", isDirectory: true)
-            .appendingPathComponent("qemu-\(architecture)-softmmu", isDirectory: false)
+            .appendingPathComponent("\(mode.frameworkName).framework", isDirectory: true)
+            .appendingPathComponent(mode.frameworkName, isDirectory: false)
             .path
     }
 
@@ -136,13 +136,14 @@ final class QEMUHost {
 
     // MARK: - Lifecycle
 
-    func start(configuration: VMConfiguration, profile: BootProfile = BootProfile()) throws {
+    func start(configuration: VMConfiguration, profile: BootProfile = BootProfile(), mode: ExecutionMode) throws {
         guard !isRunning else { throw HostError.alreadyRunning }
         guard emulatorFinished else { throw HostError.emulatorBusy }
         let config = configuration.validated()
 
-        // Refuse early rather than run a translator that cannot emit code.
-        guard JIT.isDebugged else { throw HostError.debuggerNotAttached }
+        // Never load the code-generating runtime without permission.
+        if mode == .jit && !JIT.isDebugged { throw HostError.debuggerNotAttached }
+        let libraryPath = libraryPath(for: mode)
         log(JIT.explanation)
 
         guard FileManager.default.fileExists(atPath: libraryPath) else {
@@ -177,6 +178,7 @@ final class QEMUHost {
         do {
             argv = try buildArguments(
                 config: config,
+                mode: mode,
                 profile: profile,
                 qemuSerialFd: console.guestFd,
                 qmpFd: qmp.guestFd
@@ -450,6 +452,7 @@ final class QEMUHost {
 
     private func buildArguments(
         config: VMConfiguration,
+        mode: ExecutionMode,
         profile: BootProfile,
         qemuSerialFd: Int32,
         qmpFd: Int32
@@ -463,16 +466,7 @@ final class QEMUHost {
         args += ["-smp", String(config.cpuCount)]
         args += ["-m", String(config.memoryMiB)]
 
-        var accel = "tcg"
-        if config.forceMulticore { accel += ",thread=multi" }
-        accel += ",tb-size=\(config.jitCacheMiB)"
-        // iOS will not give an app a single writable and executable mapping
-        // unless it holds the JIT entitlement, which no sideloaded build does.
-        // UTM's iOS argument builder passes this whenever that entitlement is
-        // missing, whether or not a debugger is attached, and every sideloaded
-        // UTM VM runs with it.
-        accel += ",split-wx=on"
-        args += ["-accel", accel]
+        args += ["-accel", mode.accelerator(cacheMiB: config.jitCacheMiB, multicore: config.forceMulticore)]
 
         // Firmware and future ACPI tables live in the bundle.
         args += ["-L", firmwareDirectory.path]
@@ -538,6 +532,7 @@ final class QEMUHost {
 
         if config.network.enabled {
             var netdev = "user,id=net0"
+            if let forward = config.sshForward { netdev += ",hostfwd=\(forward)" }
             for forward in config.network.portForwards {
                 netdev += ",hostfwd=\(forward.protocolName)::\(forward.hostPort)-:\(forward.guestPort)"
             }

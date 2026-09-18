@@ -54,6 +54,8 @@ jobs:
         run: |
           xcrun swiftc -parse-as-library Sources/CodexChannel.swift scripts/test-channel.swift -o "$RUNNER_TEMP/channel-tests"
           "$RUNNER_TEMP/channel-tests"
+          xcrun swiftc -parse-as-library Sources/VMConfiguration.swift Sources/ExecutionMode.swift scripts/test-runtime-settings.swift -o "$RUNNER_TEMP/settings-tests"
+          "$RUNNER_TEMP/settings-tests"
 
       - name: Fetch prebuilt runtime
         if: ${{ !inputs.build_runtime }}
@@ -94,6 +96,16 @@ jobs:
           # app bundle and would have to grow a second code path to do this one.
           bash scripts/prepare_dependencies.sh "$PWD/sysroot-iOS-arm64"
 
+      - name: Prepare interpreter runtime
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 https://github.com/utmapp/UTM/releases/download/v5.0.5/UTM-SE.ipa -o "$RUNNER_TEMP/UTM-SE.ipa"
+          echo "a2496c8435cedfb7373ba6f53884cca1aff54e030628258e91d7bb5685aa1334  $RUNNER_TEMP/UTM-SE.ipa" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/UTM-SE.ipa" 'Payload/*.app/Frameworks/*' 'Payload/*.app/qemu/*' -d "$RUNNER_TEMP/utm-se"
+          SE_APP="$(find "$RUNNER_TEMP/utm-se/Payload" -maxdepth 1 -name '*.app' -type d | head -1)"
+          node scripts/slim_runtime.mjs "$SE_APP" "$RUNNER_TEMP/interpreter"
+          python3 scripts/prepare_interpreter.py "$RUNNER_TEMP/interpreter" Dependencies
+
       - name: Generate Xcode project
         run: |
           command -v xcodegen >/dev/null || brew install xcodegen
@@ -114,6 +126,7 @@ jobs:
           APP="PocketVM.xcarchive/Products/Applications/PocketVM.app"
           test -f "$APP/PocketVM"
           test -f "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu"
+          test -f "$APP/Frameworks/tci-qemu-aarch64-softmmu.framework/tci-qemu-aarch64-softmmu"
           test -f "$APP/qemu/edk2-aarch64-code.fd"
           xcrun lipo "$APP/PocketVM" -verify_arch arm64
           xcrun lipo "$APP/Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu" -verify_arch arm64

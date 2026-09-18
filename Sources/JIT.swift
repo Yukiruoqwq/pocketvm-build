@@ -7,7 +7,7 @@ import Foundation
 ///
 /// A debugger being attached changes the kernel's answer. `csops` then reports
 /// `CS_DEBUGGED`, and the allocation succeeds. That is the entire reason
-/// StikDebug has to attach before the VM starts.
+/// the native translator needs StikDebug; the interpreter does not.
 enum JIT {
     private static let csOpsStatus: UInt32 = 0
     /// Bit reported by `csops(CS_OPS_STATUS)` once a debugger is attached.

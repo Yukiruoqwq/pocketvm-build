@@ -719,6 +719,12 @@ function rowsFor(page) {
         control: () => button("添加…", "btn", "pickDisk"),
       },
       {
+        group: "开发",
+      },
+      { label: "SSH", desc: "USB · 重启生效", control: () => switchControl("developerSSH", cfg.developerSSH === true) },
+      { label: "SSH 端口", control: () => numberInput("developerSSHPort", cfg.developerSSHPort ?? 2222, 1024, 65535) },
+      { label: "SSH 用户", control: () => el("span", "value", "codex") },
+      {
         group: "操作",
       },
       {
@@ -953,11 +959,10 @@ const GATE_ICON_POWER =
 // The steps the emulator itself walks on a first run, in the order the host
 // reports them. The wording is the host's own, so the counter and the line
 // under it can never disagree.
-const GATE_STEPS = ["下载镜像", "校验镜像", "准备启动参数", "首次启动", "安装"];
+const GATE_STEPS = ["downloading", "verifying", "preparing", "booting", "installing"];
 
 function gateStep() {
-  const stage = state.provision.stage ?? "";
-  const index = GATE_STEPS.findIndex((step) => stage.startsWith(step.slice(0, 4)));
+  const index = GATE_STEPS.indexOf(state.provision.stageCode);
   return `${(index === -1 ? GATE_STEPS.length : index + 1)} / ${GATE_STEPS.length}`;
 }
 
@@ -968,6 +973,7 @@ function gatePhase() {
   if (!provisionKnown) return "waiting";
   const provision = state.provision;
   if (!provision.provisioned) return provision.busy ? "installing" : "install";
+  if (provision.starting) return "starting";
   if (provision.running) return provision.codexReady ? "ready" : "starting";
   return "stopped";
 }
@@ -982,7 +988,7 @@ function gateCard(phase) {
       title: "未安装",
       // A failed run keeps the host's own line: without it the card would claim
       // the machine simply is not installed yet.
-      body: provision.stage && provision.stage.startsWith("失败")
+      body: provision.stageCode === "failed"
         ? provision.stage
         : "需要先下载客户机系统",
       facts: [provision.image, provision.host, `${provision.imageBytes} GiB`],
@@ -1029,6 +1035,8 @@ let gateEntered = false;
 let gateHideTimer = null;
 
 function renderGate() {
+  const slow = state.provision.executionMode === "interpreter";
+  $("slowModeBadge").hidden = !slow;
   const gate = $("vmGate");
   if (!gate) return;
   const phase = gatePhase();
@@ -1069,6 +1077,12 @@ function renderGate() {
   const title = el("h1", null, spec.title);
   title.id = "vmGateTitle";
   card.appendChild(title);
+  if (slow && (phase === "starting" || phase === "installing")) {
+    const warning = el("div", "no-jit-warning");
+    warning.innerHTML = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5 15 14H1Z" fill="none" stroke="currentColor" stroke-linejoin="round"/><path d="M8 5.5v4" stroke="currentColor" stroke-linecap="round"/><circle cx="8" cy="12" r=".8" fill="currentColor"/></svg>';
+    warning.appendChild(el("span", null, "无jit"));
+    card.appendChild(warning);
+  }
   if (spec.body) card.appendChild(el("p", "vm-gate-body", spec.body));
   const facts = el("dl", "vm-gate-facts");
   for (const fact of spec.facts) {
@@ -1601,6 +1615,10 @@ function main() {
   // Review shortcuts: ?panel=1 opens the side panel, ?settings=vm opens that
   // settings page. Useful on a window too narrow for three columns.
   const params = new URLSearchParams(location.search);
+  if (preview && params.get("execution") === "interpreter") {
+    state.provision.executionMode = "interpreter";
+    renderGate();
+  }
   const theme = params.get("theme");
   if (theme === "light" || theme === "dark") {
     forcedTheme = theme;

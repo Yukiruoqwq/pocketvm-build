@@ -18,6 +18,11 @@ script, then reduced to the aarch64 parts by `scripts/slim_runtime.mjs`.
 The runtime is loaded as a separate dynamic library (`dlopen`) exactly as UTM's
 own app loads it.
 
+The interpreter runtime is from the `UTM-SE.ipa` asset in UTM v5.0.5,
+built with `--enable-tcg-interpreter`. Its framework names and dependency
+install names receive a `tci-` prefix; emulator code is unchanged.
+Source and build scripts: https://github.com/utmapp/UTM/tree/v5.0.5 .
+
 ## Firmware (embedded in the app bundle)
 
 - `edk2-aarch64-code.fd`, `edk2-arm-vars.fd` — EDK II / ArmVirtQemu, from the

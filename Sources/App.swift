@@ -76,6 +76,7 @@ final class VMModel: ObservableObject {
     /// app: QEMU cannot be initialised twice in one process.
     private var stopping = false
     private var starting = false
+    @Published private(set) var executionMode: ExecutionMode?
     private var promptInFlight = false
     private var selectedThreadID: String?
     /// Set once the guest's own OS has been heard from, which is what makes
@@ -527,8 +528,10 @@ final class VMModel: ObservableObject {
     private func startPrepared() async {
         guard !isRunning, !stopping, !starting else { return }
         starting = true
+        executionMode = .select(jitAvailable: JIT.isDebugged)
+        pushProvisionState()
         refreshedAfterSignIn = false
-        defer { starting = false }
+        defer { starting = false; pushProvisionState() }
         auth.reset()
         diagnostics.removeAll()
         consoleBuffer.removeAll(keepingCapacity: true)
@@ -536,7 +539,7 @@ final class VMModel: ObservableObject {
             let prepared = try await provisioner.prepare()
             configuration = prepared.configuration
             pushConfiguration()
-            try host.start(configuration: prepared.configuration, profile: prepared.profile)
+            try host.start(configuration: prepared.configuration, profile: prepared.profile, mode: executionMode ?? .interpreter)
             isRunning = true
             codexReady = false
             bootDetail = provisioner.isProvisioned ? "正在启动 QEMU" : ""
@@ -709,7 +712,9 @@ final class VMModel: ObservableObject {
         let outputs: [[String: String]] = provisioner.isProvisioned ? documentsListing() : []
         var payload: [String: Any] = [
             "stage": stage.description,
-            "busy": stage.isActive,
+            "stageCode": stage.code,
+            "busy": stage.isActive || starting,
+            "starting": starting,
             "provisioned": provisioner.isProvisioned,
             "image": provisioner.image.displayName,
             "imageBytes": Int(provisioner.image.capacityGiB),
@@ -718,6 +723,7 @@ final class VMModel: ObservableObject {
             "outputs": outputs,
             "password": provisioner.state.password,
             "running": isRunning,
+            "executionMode": executionMode?.rawValue ?? "idle",
             "stopping": stopping,
             "codexReady": codexReady,
             "detail": bootDetail,

@@ -69,6 +69,16 @@ struct VMConfiguration: Codable, Equatable {
     var boot: Boot = Boot()
     var drives: [Drive] = []
     var network: Network = Network()
+    // Optional for compatibility with configurations from earlier versions.
+    var developerSSH: Bool?
+    var developerSSHPort: Int?
+
+    var sshPort: Int { developerSSHPort ?? 2222 }
+
+    var sshForward: String? {
+        guard developerSSH == true, network.enabled else { return nil }
+        return "tcp:127.0.0.1:\(sshPort)-:22"
+    }
 
     static var defaultURL: URL {
         documentsDirectory.appendingPathComponent("pocketvm.json")
@@ -108,6 +118,9 @@ struct VMConfiguration: Codable, Equatable {
         // a refusal inside the emulator is much harder to read than a clamp.
         copy.memoryMiB = min(max(copy.memoryMiB, 256), 8192)
         copy.jitCacheMiB = min(max(copy.jitCacheMiB, 16), 4096)
+        copy.developerSSHPort = min(max(copy.sshPort, 1024), 65535)
+        if copy.developerSSHPort == 8474 { copy.developerSSHPort = 2222 }
+        if copy.developerSSH == true { copy.network.enabled = true }
         copy.boot.kernel = Self.safeRelativePath(copy.boot.kernel)
         copy.boot.initrd = Self.safeRelativePath(copy.boot.initrd)
         copy.drives = copy.drives.compactMap { drive in
@@ -132,6 +145,8 @@ struct VMConfiguration: Codable, Equatable {
             guard (1...65535).contains(forward.hostPort),
                   (1...65535).contains(forward.guestPort),
                   ["tcp", "udp"].contains(forward.protocolName.lowercased()) else { return nil }
+            if copy.developerSSH == true && forward.protocolName.lowercased() == "tcp"
+                && forward.hostPort == copy.sshPort { return nil }
             var forward = forward
             forward.protocolName = forward.protocolName.lowercased()
             return forward
