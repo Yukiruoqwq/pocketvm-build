@@ -70,6 +70,15 @@ struct WebUIView: UIViewRepresentable {
         /// relaunch without the machine having to be involved.
         private static let appearanceKey = "pocketvm.appearance"
         private static let appearances = ["light", "dark", "system"]
+        private static let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        private static let speeds = ["standard", "fast"]
+
+        /// A model id ends up inside a command the guest runs, so it has to look
+        /// like an identifier and nothing else.
+        static func isSafeToken(_ value: String) -> Bool {
+            !value.isEmpty && value.count <= 64
+                && value.allSatisfy { $0.isLetter || $0.isNumber || "._-:".contains($0) }
+        }
 
         init(model: VMModel) { self.model = model }
 
@@ -156,6 +165,13 @@ struct WebUIView: UIViewRepresentable {
             case "getAppearance":
                 reply(["action": "appearance", "payload": ["theme": Self.storedAppearance]])
 
+            case "getModels":
+                // The list lives in the guest's account, so this is a request to
+                // ask it, not a cached read: the answer arrives later as a
+                // `models` message.
+                model.requestModels()
+                model.pushModels()
+
             case "setAppearance":
                 // Validated rather than stored verbatim: the page is not the
                 // authority on what the setting may be.
@@ -192,8 +208,21 @@ struct WebUIView: UIViewRepresentable {
                 }
 
             case "setModel":
-                // Remembered for when the guest's Codex CLI channel is wired.
-                UserDefaults.standard.set(payload, forKey: "pocketvm.model")
+                // The model, the reasoning level and the service tier for the
+                // next prompt. Validated here so the guest is only ever asked
+                // to run values from a known vocabulary.
+                guard let payload else { return }
+                var selection: [String: String] = [:]
+                if let model = payload["model"] as? String, Self.isSafeToken(model) {
+                    selection["model"] = model
+                }
+                if let effort = payload["effort"] as? String, Self.efforts.contains(effort) {
+                    selection["effort"] = effort
+                }
+                if let speed = payload["speed"] as? String, Self.speeds.contains(speed) {
+                    selection["speed"] = speed
+                }
+                UserDefaults.standard.set(selection, forKey: "pocketvm.model")
 
             case "pickFiles", "pickPhotos", "pickRemoteFile":
                 model.appendStatus("此构建还没有接入系统选择器。")

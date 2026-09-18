@@ -10,6 +10,17 @@ struct PocketVMApp: App {
     }
 }
 
+/// What the model picker last chose.
+///
+/// The frontend owns the preference and writes it through the bridge; the
+/// command line is built from it here, because that is where a preference stops
+/// being a preference and becomes something the guest is asked to run.
+struct ModelSelection {
+    var model: String?
+    var effort: String?
+    var fast: Bool
+}
+
 @MainActor
 final class VMModel: ObservableObject {
     @Published var consoleText: String = ""
@@ -30,6 +41,11 @@ final class VMModel: ObservableObject {
     /// 定时任务 — the scheduled tasks the frontend lists. Persisted so the list
     /// survives a relaunch. Firing them on time still needs the scheduler.
     @Published var automations: [[String: Any]] = []
+    /// The models the guest's Codex account can use, as answered by the guest's
+    /// own app server. Empty until it has been asked: the list belongs to the
+    /// account, so there is nothing truthful to show before that.
+    @Published private(set) var models: [[String: Any]] = []
+    private var modelsError: String?
 
     let provisioner = Provisioner()
     let auth = CodexAuth()
@@ -209,7 +225,60 @@ final class VMModel: ObservableObject {
             return
         }
         appendStatus("消息已发送到客户机终端；对话面板由客户机内的 Codex 接管后即可直接回复。")
-        host.writeToConsole(ConsoleText.quotedCommand(text) + "\n")
+        host.writeToConsole(ConsoleText.execCommand(text, selection: storedModelSelection()) + "\n")
+    }
+
+    // ------------------------------------------------------------- 模型
+
+    private func storedModelSelection() -> ModelSelection {
+        let stored = UserDefaults.standard.dictionary(forKey: "pocketvm.model")
+        let efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        let model = (stored?["model"] as? String).flatMap { $0.isEmpty || $0 == "auto" ? nil : $0 }
+        let effort = (stored?["effort"] as? String).flatMap { efforts.contains($0) ? $0 : nil }
+        return ModelSelection(model: model, effort: effort, fast: (stored?["speed"] as? String) == "fast")
+    }
+
+    /// Asks the guest what its Codex account can use.
+    ///
+    /// The helper is fetched from this app rather than typed out, so a guest
+    /// installed by an earlier build answers the same question as a new one.
+    func requestModels() {
+        guard isRunning, codexReady else { return }
+        guard let base = provisioner.helperBaseURL else {
+            append(diagnostic: "no helper server is running")
+            return
+        }
+        append(diagnostic: "asking the guest for its model list")
+        host.writeToConsole(
+            "curl -fsS \(base)/pocketvm-models.mjs -o /tmp/pocketvm-models.mjs && node /tmp/pocketvm-models.mjs\n"
+        )
+    }
+
+    func pushModels() {
+        var payload: [String: Any] = ["models": models]
+        if let modelsError { payload["error"] = modelsError }
+        pushToWeb?(["action": "models", "payload": payload])
+    }
+
+    /// The guest's answer, as the one line the helper prints.
+    private func noteModels(line: String) {
+        guard let marker = line.range(of: "POCKETVM_MODELS") else { return }
+        let rest = String(line[marker.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if rest.hasPrefix("FAILED") {
+            models = []
+            modelsError = String(rest.dropFirst("FAILED".count)).trimmingCharacters(in: .whitespaces)
+            append(diagnostic: "model list unavailable: \(modelsError ?? "")")
+            pushModels()
+            return
+        }
+        guard let data = rest.data(using: .utf8),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return
+        }
+        models = list
+        modelsError = nil
+        append(diagnostic: "guest reported \(list.count) model(s)")
+        pushModels()
     }
 
     // MARK: - Lifecycle
@@ -297,6 +366,7 @@ final class VMModel: ObservableObject {
             let line = ConsoleText.plain(String(decoding: lineData, as: UTF8.self))
             provisioner.ingest(consoleLine: line)
             auth.ingest(line: line)
+            noteModels(line: line)
             noteBoot(line: line)
         }
         // A guest that never emits a newline must not grow this without bound.
@@ -373,6 +443,13 @@ final class VMModel: ObservableObject {
         probeTask?.cancel()
         probeTask = nil
         pushProvisionState()
+        // The machine is usable, so the account's model list can be asked for.
+        // It may legitimately fail until the user signs in; that answer is
+        // reported to the frontend rather than papered over with a guess.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.requestModels()
+        }
     }
 
     /// A slow machine can take minutes to reach a prompt, and the boot menu
@@ -486,10 +563,24 @@ enum ConsoleText {
         return result
     }
 
-    /// Wraps text for the guest shell so a prompt cannot be read as syntax.
-    static func quotedCommand(_ text: String) -> String {
-        let escaped = text.replacingOccurrences(of: "'", with: "'\\''")
-        return "codex exec '\(escaped)'"
+    /// One word for the guest's shell, quoted so nothing in it is read as
+    /// syntax. A prompt is arbitrary text from the user, and so is a model id.
+    static func shellQuoted(_ text: String) -> String {
+        "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// The `codex exec` line for one prompt.
+    ///
+    /// `-c` overrides the guest's own configuration for this run only, which is
+    /// exactly what the picker in the frontend promises: a model, a reasoning
+    /// level, and optionally the faster service tier, for the next prompt.
+    static func execCommand(_ text: String, selection: ModelSelection) -> String {
+        var parts = ["codex", "exec"]
+        if let model = selection.model { parts.append("--model \(shellQuoted(model))") }
+        if let effort = selection.effort { parts.append("-c model_reasoning_effort=\(shellQuoted(effort))") }
+        if selection.fast { parts.append("-c service_tier=fast") }
+        parts.append(shellQuoted(text))
+        return parts.joined(separator: " ")
     }
 }
 

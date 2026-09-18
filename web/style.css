@@ -292,6 +292,9 @@ ul { margin: 0; padding: 0; list-style: none; }
   padding: 6px;
 }
 .model-menu[hidden] { display: none; }
+.model-menu-title {
+  margin: 4px 8px 8px; font-size: var(--text-sm); color: var(--fg); font-weight: 500;
+}
 .model-menu-section {
   margin: 6px 8px 4px; font-size: var(--text-xs); color: var(--fg-faint);
 }
@@ -299,10 +302,33 @@ ul { margin: 0; padding: 0; list-style: none; }
 .model-menu-list li {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 10px; border-radius: var(--radius-sm);
-  font-size: var(--text-base); cursor: default;
+  font-size: var(--text-base); cursor: pointer;
 }
 .model-menu-list li:hover { background: var(--bg-hover); }
 .model-menu-list li .menu-desc { margin-left: auto; font-size: var(--text-xs); color: var(--fg-faint); }
+/* A model's own description sits under its name, so the row stays narrow. */
+.model-menu-empty {
+  padding: 7px 10px; font-size: var(--text-sm); color: var(--fg-faint); cursor: default;
+}
+.model-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.model-row-title { font-size: var(--text-base); }
+.model-row-desc {
+  font-size: var(--text-xs); color: var(--fg-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 190px;
+}
+
+/* 速度 — 标准 or 快速 (1.5 倍速), only for a model whose account offers it. */
+.speed-row {
+  display: flex; align-items: center; gap: 10px;
+  margin: 8px 4px 2px; padding: 8px;
+  border-top: 1px solid var(--border-soft);
+  cursor: pointer;
+}
+.speed-row[hidden] { display: none; }
+.speed-text { display: flex; flex-direction: column; gap: 2px; }
+.speed-title { font-size: var(--text-base); }
+.speed-desc { font-size: var(--text-sm); color: var(--fg-faint); }
+.speed-row .switch { margin-left: auto; }
 
 .ctx-menu {
   position: fixed; z-index: 40;

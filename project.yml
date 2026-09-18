@@ -23,6 +23,12 @@ targets:
       - path: web
         type: folder
         buildPhase: resources
+      # The guest-side helpers the host serves over QEMU's host alias. Shipped
+      # as files rather than as strings so they can be run and checked on a
+      # machine outside the app.
+      - path: guest
+        type: folder
+        buildPhase: resources
     info:
       path: Sources/Info.plist
       properties:

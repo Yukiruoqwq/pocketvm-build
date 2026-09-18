@@ -174,10 +174,21 @@
   </div>
 
   <div class="model-menu" id="modelMenu" hidden>
+    <p class="model-menu-title">推理</p>
     <p class="model-menu-section">模型</p>
     <ul class="model-menu-list" id="modelList"></ul>
     <p class="model-menu-section">推理强度</p>
     <ul class="model-menu-list" id="effortList"></ul>
+    <label class="speed-row" id="speedRow" hidden>
+      <span class="speed-text">
+        <span class="speed-title">快速</span>
+        <span class="speed-desc">1.5 倍速度，用量更多</span>
+      </span>
+      <span class="switch">
+        <input type="checkbox" id="speedToggle" aria-label="启用快速模式">
+        <span></span>
+      </span>
+    </label>
   </div>
 
   <div class="header-menu" id="headerMenuPanel" hidden>

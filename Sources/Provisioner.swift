@@ -109,6 +109,18 @@ final class Provisioner: ObservableObject {
 
     var isProvisioned: Bool { state.completed }
 
+    /// Where the guest reaches the host's own helper files.
+    ///
+    /// QEMU's user-mode networking makes `10.0.2.2` an alias for the host's
+    /// loopback, so the listener never has to leave the device or ask for the
+    /// local-network permission. The files themselves ship inside the app: this
+    /// is the only way to put a helper into a guest that was installed by an
+    /// earlier build, without asking the user to run anything by hand.
+    var helperBaseURL: String? {
+        guard let server, server.port != 0 else { return nil }
+        return "http://10.0.2.2:\(server.port)"
+    }
+
     /// Fetches whatever is missing and returns the boot profile for first boot.
     func prepare() async throws -> (configuration: VMConfiguration, profile: QEMUHost.BootProfile) {
         if !state.completed {
@@ -135,8 +147,11 @@ final class Provisioner: ObservableObject {
         configuration = configuration.validated()
         try configuration.write()
 
-        // The seed only matters on the first boot, but leaving it in place is
-        // harmless and it makes a retry work without a second code path.
+        // The helper server runs on every boot — the seed only on the first —
+        // because the frontend asks the guest for its model list long after
+        // provisioning is done.
+        server?.stop()
+        server = try startHelperServer()
         let profile = try makeBootProfile()
         stage = .booting
         return (configuration, profile)
@@ -173,8 +188,6 @@ final class Provisioner: ObservableObject {
         state.completedAt = Date()
         state.write()
         stage = .ready
-        server?.stop()
-        server = nil
         onLog?("guest reported provisioning complete")
         onFinished?(state)
     }
@@ -274,22 +287,43 @@ final class Provisioner: ObservableObject {
 
     // MARK: - Seed
 
+    /// Starts the listener the guest fetches both cloud-init's seed and the
+    /// helper scripts from.
+    private func startHelperServer() throws -> SeedServer {
+        let server = try SeedServer(preferredPort: 0)
+        server.onLog = { [weak self] line in self?.onLog?("seed: \(line)") }
+        server.onRequest = { [weak self] path in self?.onLog?("guest asked for \(path)") }
+
+        var resources: [String: SeedServer.Resource] = [:]
+        for name in ["pocketvm-models.mjs"] {
+            guard let text = Self.bundledGuestFile(name) else {
+                onLog?("helper \(name) is missing from the app bundle")
+                continue
+            }
+            resources["/\(name)"] = .text(text)
+        }
+        // The seed is what turns a stock cloud image into this guest, so it is
+        // only offered while the guest still needs it.
+        if !state.completed {
+            resources["/meta-data"] = .yaml(metadata())
+            resources["/user-data"] = .yaml(userData())
+            resources["/vendor-data"] = .text("#cloud-config\n")
+        }
+
+        try server.start(resources: resources)
+        return server
+    }
+
+    private static func bundledGuestFile(_ name: String) -> String? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: nil, subdirectory: "guest") else {
+            return nil
+        }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
     private func makeBootProfile() throws -> QEMUHost.BootProfile {
         var profile = QEMUHost.BootProfile()
-        if !state.completed {
-            let server = try SeedServer(preferredPort: 0)
-            server.onLog = { [weak self] line in
-                self?.onLog?("seed: \(line)")
-            }
-            server.onRequest = { [weak self] path in
-                self?.onLog?("seed: guest asked for \(path)")
-            }
-            try server.start(resources: [
-                "/meta-data": .yaml(metadata()),
-                "/user-data": .yaml(userData()),
-                "/vendor-data": .text("#cloud-config\n"),
-            ])
-            self.server = server
+        if !state.completed, let server {
             profile.extraArguments = [
                 // cloud-init reads the NoCloud data source URL from the SMBIOS
                 // serial number; SLIRP resolves 10.0.2.2 to the host loopback

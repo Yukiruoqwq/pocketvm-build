@@ -19,6 +19,55 @@ const bridge = {
 
 const preview = !bridge.available;
 
+// Preview only: the shape is the guest's own answer to `model/list`, filled
+// with what a real Codex account reported when it was asked. Nothing here is
+// invented — on the device the list arrives from the account, and before it
+// does the menu says so instead of offering something made up.
+const PREVIEW_MODELS = [
+  {
+    id: "gpt-5.5",
+    displayName: "GPT-5.5",
+    description: "Frontier model for complex coding, research, and real-world work.",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low" },
+      { reasoningEffort: "medium" },
+      { reasoningEffort: "high" },
+      { reasoningEffort: "xhigh" },
+    ],
+    additionalSpeedTiers: ["fast"],
+    isDefault: true,
+  },
+  {
+    id: "gpt-5.4-mini",
+    displayName: "GPT-5.4-Mini",
+    description: "Small, fast, and cost-efficient model for simpler coding tasks.",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low" },
+      { reasoningEffort: "medium" },
+      { reasoningEffort: "high" },
+      { reasoningEffort: "xhigh" },
+    ],
+    additionalSpeedTiers: [],
+    isDefault: false,
+  },
+  {
+    id: "codex-auto-review",
+    displayName: "Codex Auto Review",
+    description: "Automatic approval review model for Codex.",
+    defaultReasoningEffort: "medium",
+    supportedReasoningEfforts: [
+      { reasoningEffort: "low" },
+      { reasoningEffort: "medium" },
+      { reasoningEffort: "high" },
+      { reasoningEffort: "xhigh" },
+    ],
+    additionalSpeedTiers: [],
+    isDefault: false,
+  },
+];
+
 // ------------------------------------------------------------------- state
 
 // Sample data for the browser preview: the same shape the bridge delivers.
@@ -86,25 +135,16 @@ const state = {
         { title: "Codex 登录", active: false },
       ]
     : [],
-  // The composer's model control. The bridge can replace the list once the
-  // guest reports which models its Codex CLI offers.
+  // 推理 — the composer's model control. The list is never written down here:
+  // it is whatever the guest's Codex account answered, so an account with no
+  // models yet shows no models.
   model: {
-    name: "Codex",
+    id: null,
     effort: "medium",
-    models: [
-      { id: "auto", label: "自动", desc: "推荐" },
-      { id: "gpt-5.5-thinking", label: "GPT-5.5 Thinking" },
-      { id: "gpt-5.3-codex", label: "GPT-5.3-Codex" },
-      { id: "gpt-5.5-pro", label: "GPT-5.5 Pro", desc: "Pro" },
-    ],
-    efforts: [
-      { id: "none", label: "无" },
-      { id: "minimal", label: "极低" },
-      { id: "low", label: "轻度" },
-      { id: "medium", label: "中" },
-      { id: "high", label: "高" },
-      { id: "xhigh", label: "极高" },
-    ],
+    speed: "standard",
+    models: preview ? PREVIEW_MODELS : [],
+    loading: false,
+    error: null,
   },
   // 定时任务 — the same shape the app's scheduled-task list uses.
   automations: preview
@@ -251,51 +291,147 @@ function appendMessage(message) {
   renderMessages();
 }
 
-// ------------------------------------------------------- model and effort
+// ------------------------------------------------------------- 推理
 
-function effortLabel() {
-  const effort = state.model.efforts.find((entry) => entry.id === state.model.effort);
-  return effort ? effort.label : "";
+// 推理强度 — the labels the app itself uses
+// (composer.mode.local.reasoning.<effort>.label).
+const EFFORT_LABELS = {
+  none: "无",
+  minimal: "极低",
+  low: "轻度",
+  medium: "中",
+  high: "高",
+  xhigh: "极高",
+  max: "最高",
+  ultra: "Ultra",
+  persistent: "持续",
+};
+
+function availableModels() {
+  return (state.model.models ?? []).filter((entry) => !entry.hidden);
+}
+
+/// The model the menu is describing: the chosen one, or the account's default
+/// while nothing has been chosen. Null until the guest has answered.
+function selectedModel() {
+  const list = availableModels();
+  return (
+    list.find((entry) => entry.id === state.model.id) ??
+    list.find((entry) => entry.isDefault) ??
+    list[0] ??
+    null
+  );
+}
+
+function supportedEfforts(model) {
+  return (model?.supportedReasoningEfforts ?? []).map((entry) => entry.reasoningEffort ?? entry);
+}
+
+/// 快速 (1.5 倍速) is offered by the account per model, so the switch is only
+/// there for a model that says it has the tier.
+function supportsFast(model) {
+  return (model?.additionalSpeedTiers ?? []).some((tier) => tier === "fast" || tier === "priority");
+}
+
+function effortLabel(effort) {
+  return EFFORT_LABELS[effort] ?? effort ?? "";
 }
 
 function renderModelChip() {
-  $("modelName").textContent = state.model.name;
-  $("modelEffort").textContent = effortLabel();
+  const model = selectedModel();
+  $("modelName").textContent = model ? model.displayName ?? model.id : "Codex";
+  $("modelEffort").textContent = effortLabel(state.model.effort);
+}
+
+function sendModelSelection() {
+  bridge.send("setModel", {
+    model: state.model.id,
+    effort: state.model.effort,
+    speed: state.model.speed,
+  });
 }
 
 function renderModelMenu() {
-  const models = $("modelList");
-  models.innerHTML = "";
-  for (const entry of state.model.models) {
-    const selected = entry.label === state.model.name;
-    const row = el("li", null, entry.label);
-    row.setAttribute("aria-selected", selected ? "true" : "false");
-    if (entry.desc) row.appendChild(el("span", "menu-desc", entry.desc));
-    if (selected) row.appendChild(el("span", "menu-desc", "✓"));
-    row.addEventListener("click", () => {
-      state.model.name = entry.label;
-      renderModelChip();
-      renderModelMenu();
-      bridge.send("setModel", { model: entry.id, effort: state.model.effort });
-    });
-    models.appendChild(row);
+  const model = selectedModel();
+  const list = $("modelList");
+  list.innerHTML = "";
+  const entries = availableModels();
+  if (!entries.length) {
+    // Nothing is invented here: until the guest's Codex has answered with the
+    // models this account can use, the menu says exactly that.
+    const message = state.model.loading
+      ? "正在获取模型…"
+      : state.model.error || "登录 Codex 后可获取模型";
+    list.appendChild(el("li", "model-menu-empty", message));
+  }
+  for (const entry of entries) {
+    const row = el("li");
+    const current = entry.id === (state.model.id ?? model?.id);
+    row.setAttribute("aria-selected", current ? "true" : "false");
+    const text = el("span", "model-row-text");
+    text.appendChild(el("span", "model-row-title", entry.displayName ?? entry.id));
+    if (entry.description) text.appendChild(el("span", "model-row-desc", entry.description));
+    row.appendChild(text);
+    if (current) row.appendChild(el("span", "menu-desc", "✓"));
+    row.addEventListener("click", () => chooseModel(entry.id));
+    list.appendChild(row);
   }
 
   const efforts = $("effortList");
   efforts.innerHTML = "";
-  for (const entry of state.model.efforts) {
-    const selected = entry.id === state.model.effort;
-    const row = el("li", null, entry.label);
-    row.setAttribute("aria-selected", selected ? "true" : "false");
-    if (selected) row.appendChild(el("span", "menu-desc", "✓"));
+  const supported = supportedEfforts(model);
+  if (!supported.length) {
+    efforts.appendChild(el("li", "model-menu-empty", "获取模型后可选择"));
+  }
+  for (const effort of supported) {
+    const row = el("li", null, effortLabel(effort));
+    row.setAttribute("aria-selected", effort === state.model.effort ? "true" : "false");
+    if (effort === state.model.effort) row.appendChild(el("span", "menu-desc", "✓"));
     row.addEventListener("click", () => {
-      state.model.effort = entry.id;
+      state.model.effort = effort;
+      sendModelSelection();
       renderModelChip();
       renderModelMenu();
-      bridge.send("setModel", { model: state.model.models.find((m) => m.label === state.model.name)?.id, effort: entry.id });
     });
     efforts.appendChild(row);
   }
+
+  // 速度 — 标准 / 快速 (1.5 倍速), the account's own service tier.
+  const speedRow = $("speedRow");
+  speedRow.hidden = !supportsFast(model);
+  $("speedToggle").checked = state.model.speed === "fast";
+}
+
+function chooseModel(id) {
+  state.model.id = id;
+  const model = selectedModel();
+  // The reasoning levels belong to the model, so a level the new one does not
+  // offer cannot stay selected.
+  const supported = supportedEfforts(model);
+  if (supported.length && !supported.includes(state.model.effort)) {
+    state.model.effort = model.defaultReasoningEffort ?? supported[0];
+  }
+  if (!supportsFast(model)) state.model.speed = "standard";
+  sendModelSelection();
+  renderModelChip();
+  renderModelMenu();
+}
+
+/// The guest's answer to `model/list`.
+function applyModels(payload) {
+  state.model.models = payload?.models ?? [];
+  state.model.error = payload?.error ?? null;
+  state.model.loading = false;
+  const model = selectedModel();
+  if (model && !state.model.id) {
+    const supported = supportedEfforts(model);
+    state.model.effort = supported.includes(state.model.effort)
+      ? state.model.effort
+      : model.defaultReasoningEffort ?? supported[0] ?? state.model.effort;
+  }
+  renderModelChip();
+  if (!$("modelMenu").hidden) renderModelMenu();
+  if (!$("settings").hidden) renderSettings();
 }
 
 function closeModelMenu() {
@@ -306,12 +442,20 @@ function closeModelMenu() {
 function wireModelMenu() {
   const menu = $("modelMenu");
   const chip = $("modelChip");
+  $("speedToggle").addEventListener("change", (event) => {
+    state.model.speed = event.target.checked ? "fast" : "standard";
+    sendModelSelection();
+  });
   chip.addEventListener("click", (event) => {
     event.stopPropagation();
     const open = menu.hidden;
     menu.hidden = !open;
     chip.setAttribute("aria-expanded", open ? "true" : "false");
     if (!open) return;
+    // Asking each time is cheap, and it is what makes the menu follow an
+    // account that changed: signed in, signed out or a different plan.
+    state.model.loading = !availableModels().length;
+    bridge.send("getModels");
     renderModelMenu();
     // Sit above the composer pill, right-aligned with it.
     const box = chip.getBoundingClientRect();
@@ -474,6 +618,7 @@ function rowsFor(page) {
   }
   if (page === "account") {
     const auth = state.auth;
+    const model = selectedModel();
     const rows = [
       { group: "Codex" },
       {
@@ -485,6 +630,12 @@ function rowsFor(page) {
         label: "登录",
         desc: "设备代码会显示在这里，用浏览器确认即可",
         control: () => button("登录 Codex", "btn-primary", "codexLogin"),
+      },
+      {
+        label: "模型",
+        // The list comes from the account, so this is a fetch, not a setting.
+        desc: state.model.error || (model ? `${availableModels().length} 个可用模型` : "登录后从客户机的 Codex 获取"),
+        control: () => button("获取模型", "btn", "getModels"),
       },
     ];
     if (auth.state === "awaiting") {
@@ -798,6 +949,9 @@ window.pocketvmReceive = function (message) {
       state.appearance = message.payload?.theme || "system";
       applyAppearance();
       if (!$("settings").hidden) renderSettings();
+      break;
+    case "models":
+      applyModels(message.payload || {});
       break;
     case "config":
       state.config = message.payload || state.config;
@@ -1269,6 +1423,9 @@ function main() {
     renderGate();
   }
   if (params.has("panel")) $("app").classList.add("panel-open");
+  // Review shortcut: ?models=1 opens the picker so it can be looked at without
+  // a mouse.
+  if (params.has("models")) $("modelChip").click();
   if (params.has("settings")) {
     const wanted = params.get("settings");
     if (settingsPages.some((page) => page.id === wanted)) activePage = wanted;
