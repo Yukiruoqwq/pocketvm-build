@@ -73,6 +73,13 @@ final class QEMUHost {
     /// any escape sequence that straddles a read boundary, and the serial line
     /// is not guaranteed to be valid UTF-8 at all.
     var onConsoleBytes: ((Data) -> Void)?
+    /// Called with a PNG of the guest's own screen.
+    ///
+    /// The serial line is only a console when the guest decides to make it one.
+    /// The display is not optional in the same way: firmware, the boot loader
+    /// and the kernel all draw to it whether or not anything was configured
+    /// inside the guest, so it is what the frontend shows.
+    var onScreenFrame: ((Data) -> Void)?
     /// Called with human-readable status lines from the host, not the guest.
     var onLog: ((String) -> Void)?
     /// Called when the guest stops, with the process exit status.
@@ -82,6 +89,10 @@ final class QEMUHost {
     private var serialReadSource: DispatchSourceRead?
     private var qmpHostFd: Int32 = -1
     private var qmpReadSource: DispatchSourceRead?
+    private var screenTimer: DispatchSourceTimer?
+    private var loggedScreenError = false
+    private var consoleBytesTotal = 0
+    private var loggedConsoleSample = false
     private var qemuThread: Thread?
     private var libraryHandle: UnsafeMutableRawPointer?
     private var isRunning = false
@@ -95,6 +106,13 @@ final class QEMUHost {
     private var emulatorFinished = true
     private var loggedConsoleRead = false
     private var loggedConsoleWrite = false
+
+    /// The monitor is one connection. The disk resize at boot, the request that
+    /// stops the machine and the periodic screen grabs all travel over it, and
+    /// QEMU answers them in order, so two callers reading replies at once would
+    /// each take the other's answer.
+    private static let monitorLock = NSLock()
+    private static let screenQueue = DispatchQueue(label: "com.pocketvm.screen", qos: .utility)
 
     var running: Bool { isRunning }
 
@@ -225,6 +243,8 @@ final class QEMUHost {
     func requestPowerDown() {
         guard isRunning else { return }
         log("asking the guest to power down")
+        QEMUHost.monitorLock.lock()
+        defer { QEMUHost.monitorLock.unlock() }
         QEMUHost.sendMonitor(fd: qmpHostFd, command: "{\"execute\":\"system_powerdown\"}\n")
     }
 
@@ -234,11 +254,93 @@ final class QEMUHost {
     func requestQuit() {
         guard isRunning else { return }
         log("asking the emulator to quit")
+        QEMUHost.monitorLock.lock()
+        defer { QEMUHost.monitorLock.unlock() }
         QEMUHost.sendMonitor(fd: qmpHostFd, command: "{\"execute\":\"quit\"}\n")
+    }
+
+    // MARK: - Screen
+
+    /// Starts pushing pictures of the guest's own display.
+    ///
+    /// It runs only while the frontend is showing the panel: a frame costs a
+    /// full read of the framebuffer, and there is no reason to spend that on a
+    /// page nobody is looking at.
+    func startScreenCapture(every interval: TimeInterval = 1.2) {
+        stopScreenCapture()
+        guard isRunning, qmpHostFd >= 0 else { return }
+        loggedScreenError = false
+        let timer = DispatchSource.makeTimerSource(queue: QEMUHost.screenQueue)
+        timer.schedule(
+            deadline: .now() + .milliseconds(300),
+            repeating: .milliseconds(Int((interval * 1000).rounded())),
+            leeway: .milliseconds(120)
+        )
+        timer.setEventHandler { [weak self] in self?.captureScreenFrame() }
+        timer.resume()
+        screenTimer = timer
+        log("screen: 画面输出已开始")
+    }
+
+    func stopScreenCapture() {
+        guard let timer = screenTimer else { return }
+        timer.cancel()
+        screenTimer = nil
+        log("screen: 画面输出已停止")
+    }
+
+    private var screenPath: String {
+        documents().appendingPathComponent("screen.png").path
+    }
+
+    private func captureScreenFrame() {
+        guard isRunning, qmpHostFd >= 0 else { return }
+        // Skips the frame rather than waiting: the monitor may be busy with the
+        // resize or a shutdown, and a stale picture is worse than no picture.
+        guard QEMUHost.monitorLock.`try`() else { return }
+        defer { QEMUHost.monitorLock.unlock() }
+
+        let path = screenPath
+        try? FileManager.default.removeItem(atPath: path)
+        let command = "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"\(path)\","
+            + "\"format\":\"png\"}}"
+        QEMUHost.sendMonitor(fd: qmpHostFd, command: command + "\n")
+
+        let reply = QEMUHost.readMonitorReply(fd: qmpHostFd, timeout: 3)
+        if let reply, reply.contains("\"error\"") {
+            // Once, not every frame: a machine with no display device would
+            // otherwise fill the log with the same line.
+            if !loggedScreenError {
+                loggedScreenError = true
+                log("screen: 模拟器拒绝了截屏 \(reply.prefix(120))")
+            }
+            return
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
+            if !loggedScreenError {
+                loggedScreenError = true
+                log("screen: 截屏文件没有写出来")
+            }
+            return
+        }
+        onScreenFrame?(data)
+    }
+
+    /// The reply half of `monitorCommand`, for callers that already hold the
+    /// lock.
+    private static func readMonitorReply(fd: Int32, timeout: TimeInterval) -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let remaining = max(0.2, deadline.timeIntervalSinceNow)
+            guard let line = readMonitorLine(fd: fd, timeout: remaining) else { return nil }
+            if line.contains("\"return\"") || line.contains("\"error\"") { return line }
+        }
+        return nil
     }
 
     private func teardown() {
         isRunning = false
+        stopScreenCapture()
         serialReadSource?.cancel()
         serialReadSource = nil
         if serialHostFd >= 0 {
@@ -297,11 +399,25 @@ final class QEMUHost {
             guard let self else { return }
             var buffer = [UInt8](repeating: 0, count: 8192)
             let count = read(fd, &buffer, buffer.count)
-            guard count > 0 else { return }
+            if count < 0 {
+                let code = errno
+                // EAGAIN here is the descriptor's own business: the source will
+                // fire again when there is something to read.
+                if code != EAGAIN { self.log("console: read failed, errno \(code)") }
+                return
+            }
+            if count == 0 {
+                // QEMU closed its end of the line. Without this the panel just
+                // sits there and looks like the guest had nothing to say.
+                self.log("console: the guest's end of the line closed")
+                source.cancel()
+                return
+            }
             if !loggedConsoleRead {
                 loggedConsoleRead = true
                 log("console: first read of \(count) bytes from the guest")
             }
+            self.noteConsoleRead(count, bytes: buffer)
             let slice = buffer[0..<count]
             self.onConsoleBytes?(Data(slice))
             let text = String(decoding: slice, as: UTF8.self)
@@ -309,6 +425,40 @@ final class QEMUHost {
         }
         source.resume()
         serialReadSource = source
+    }
+
+    /// How much the guest has actually said, and what it opened with.
+    ///
+    /// "The terminal is empty" has two very different causes — the bytes never
+    /// arrived, or they arrived and were not drawn — and a counter is the only
+    /// way to tell them apart after the fact.
+    private func noteConsoleRead(_ count: Int, bytes: [UInt8]) {
+        let previous = consoleBytesTotal
+        consoleBytesTotal += count
+        for threshold in [1024, 65536, 1048576]
+        where consoleBytesTotal >= threshold && previous < threshold {
+            log("console: \(threshold) bytes received from the guest")
+        }
+        if !loggedConsoleSample {
+            loggedConsoleSample = true
+            log("console: first bytes \(QEMUHost.sample(of: bytes, count: count))")
+        }
+    }
+
+    /// The opening of the guest's output, with the bytes that would eat the log
+    /// spelled out, so a stream that stops mid-sequence is visible as such.
+    private static func sample(of bytes: [UInt8], count: Int) -> String {
+        var text = ""
+        for byte in bytes[0..<min(count, 120)] {
+            switch byte {
+            case 0x1B: text += "^["
+            case 0x0A: text += "\\n"
+            case 0x0D: text += "\\r"
+            case 0x20...0x7E: text.append(Character(UnicodeScalar(byte)))
+            default: text += "."
+            }
+        }
+        return text
     }
 
     // MARK: - Arguments
@@ -356,7 +506,12 @@ final class QEMUHost {
 
         // Firmware and future ACPI tables live in the bundle.
         args += ["-L", firmwareDirectory.path]
+        // No window backend: the picture is taken from the machine instead.
+        // The device itself is not optional — without it QEMU has no surface at
+        // all, so the firmware never draws a boot logo, the boot loader never
+        // draws a menu and the kernel has no console to log to.
         args += ["-display", "none"]
+        args += ["-device", "virtio-gpu-pci"]
 
         // Console over the socket pair created above.
         args += ["-chardev", "socket,id=term0,fd=\(qemuSerialFd)"]
@@ -508,6 +663,11 @@ final class QEMUHost {
         log: @escaping (String) -> Void
     ) {
         DispatchQueue.global(qos: .utility).async {
+            // The greeting and the capability negotiation are a conversation on
+            // the one monitor, so they are held under the same lock as every
+            // later command.
+            monitorLock.lock()
+            defer { monitorLock.unlock() }
             guard let greeting = readMonitorLine(fd: fd, timeout: 10) else {
                 log("qmp: 模拟器没有问候")
                 return

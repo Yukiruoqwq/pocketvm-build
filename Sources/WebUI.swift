@@ -105,6 +105,14 @@ struct WebUIView: UIViewRepresentable {
                   let action = body["action"] as? String else { return }
             let payload = body["payload"] as? [String: Any]
 
+            // Every call from the page is named in the host log. "The button
+            // did nothing" then answers itself: either the page never called,
+            // or it called and the host refused. Keystrokes are excluded —
+            // each one would be a line.
+            if action != "terminalInput" {
+                model.noteFromWeb("action \(action)")
+            }
+
             switch action {
             case "getConfig":
                 if let config = model.configuration,
@@ -263,6 +271,17 @@ struct WebUIView: UIViewRepresentable {
 
             case "terminalClosed":
                 break
+
+            case "screenStart":
+                model.startScreenFrames()
+
+            case "screenStop":
+                model.stopScreenFrames()
+
+            case "note":
+                // The page's own failures. A terminal that could not be built
+                // is otherwise invisible from here.
+                if let text = payload?["text"] as? String { model.noteFromWeb(text) }
 
             default:
                 break

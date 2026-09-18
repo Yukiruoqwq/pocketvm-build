@@ -45,6 +45,10 @@ EOF
 }
 
 report() {
+  # The system is up; the CLI inside it is what the host's next line is about.
+  # pocketvm-boot.sh sends this earlier in the boot, and this is the fallback for
+  # a guest that has not picked that script up yet.
+  post boot '{"stage":"booting"}'
   command -v codex >/dev/null 2>&1 || return 0
   version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
   post ready "{\"stage\":\"ready\",\"version\":\"${version:-unknown}\"}"

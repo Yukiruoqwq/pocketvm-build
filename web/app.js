@@ -1167,6 +1167,9 @@ window.pocketvmReceive = function (message) {
     case "terminalOutput":
       terminalReceive(message.payload);
       break;
+    case "screenFrame":
+      screenReceive(message.payload);
+      break;
     case "terminalState":
       setTerminalState(message.payload?.text ?? "未连接");
       break;
@@ -1211,14 +1214,16 @@ function wireChrome() {
     setSidePanel(sidePanelChoice);
   });
 
-  // 底部面板 — where the app keeps its terminal tabs.
+  // 底部面板 — the guest's own display. The serial console it replaces is still
+  // read by the host, but what is drawn here is what the machine is drawing.
   const setBottomPanel = (open) => {
     $("bottomPanel").hidden = !open;
     $("menuBottomPanel").checked = open;
-    // The terminal is attached the first time it is actually visible: opened
-    // while hidden it measures zero and draws nothing.
-  if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());
-    if (typeof wireKeyRow === "function") wireKeyRow();
+    if (typeof requestScreen === "function") {
+      // Frames stop with the panel: each one is a full read of the guest's
+      // framebuffer, and nobody is looking at it while it is closed.
+      requestScreen(open);
+    }
   };
   $("toggleBottomPanel").addEventListener("click", () => setBottomPanel($("bottomPanel").hidden));
   $("closeBottomPanel").addEventListener("click", () => setBottomPanel(false));
@@ -1642,7 +1647,10 @@ function main() {
   }
   if (params.has("panel")) $("app").classList.add("panel-open");
   // Review shortcut: ?terminal=1 shows the console panel.
-  if (params.has("terminal")) $("toggleBottomPanel").click();
+  if (params.has("terminal")) {
+    $("toggleBottomPanel").click();
+  }
+  if (preview) screenPreview();
   // Review shortcut: ?models=1 opens the picker so it can be looked at without
   // a mouse.
   if (params.has("models")) $("modelChip").click();

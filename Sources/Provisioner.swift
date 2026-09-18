@@ -300,20 +300,24 @@ final class Provisioner: ObservableObject {
     /// helper scripts from.
     private func startHelperServer() throws -> SeedServer {
         var resources: [String: SeedServer.Resource] = [:]
-        for name in ["pocketvm-app.mjs", "pocketvm-report.sh"] {
+        for name in ["pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh"] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
                 continue
             }
             resources["/\(name)"] = .text(text)
         }
-        // The seed is what turns a stock cloud image into this guest, so it is
-        // only offered while the guest still needs it.
-        if !state.completed {
-            resources["/meta-data"] = .yaml(metadata())
-            resources["/user-data"] = .yaml(userData())
-            resources["/vendor-data"] = .text("#cloud-config\n")
-        }
+        // Offered on every boot, not only the first.
+        //
+        // cloud-init treats `runcmd` as once per instance and `bootcmd` as once
+        // per boot, and the instance id does not change, so a guest that was
+        // installed by an older build still picks up the console setup and the
+        // current helpers as soon as its next start finds this datastore. That
+        // is the only way to change anything inside a guest that is already
+        // installed: there is no shell on the device to type into yet.
+        resources["/meta-data"] = .yaml(metadata())
+        resources["/user-data"] = .yaml(userData())
+        resources["/vendor-data"] = .text("#cloud-config\n")
 
         // The fixed port is what a guest installed by this build already knows;
         // if something else on the device holds it, an ephemeral one still lets
@@ -350,7 +354,7 @@ final class Provisioner: ObservableObject {
 
     private func makeBootProfile() throws -> QEMUHost.BootProfile {
         var profile = QEMUHost.BootProfile()
-        if !state.completed, let server {
+        if let server {
             profile.extraArguments = [
                 // cloud-init reads the NoCloud data source URL from the SMBIOS
                 // serial number; SLIRP resolves 10.0.2.2 to the host loopback
@@ -401,6 +405,12 @@ final class Provisioner: ObservableObject {
               # parser, and cloud-init's schema wants a string.
               password: "\(state.password)"
               type: text
+        # Runs on every boot, unlike everything below it. A guest that was
+        # configured by an older build has no serial console and no current
+        # helpers, and this is the only channel that can fix that without
+        # somebody typing into the machine first.
+        bootcmd:
+          - [ bash, -c, "curl -fsS -m 60 http://10.0.2.2:\(Self.helperPort)/pocketvm-boot.sh -o /run/pocketvm-boot.sh && POCKETVM_BASE=http://10.0.2.2:\(Self.helperPort) bash /run/pocketvm-boot.sh || true" ]
         write_files:
           - path: /etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
             permissions: '0644'
