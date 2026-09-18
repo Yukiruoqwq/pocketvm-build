@@ -656,15 +656,22 @@ final class VMModel: ObservableObject {
     /// having been installed there first.
     private func authShellCommand(_ subcommand: String) -> String {
         let log = "/tmp/pocketvm-login.log"
+        // The guest's own proxy is what keeps OpenAI from seeing the iPad's
+        // blocked region. Older guests may not have the profile script, so the
+        // environment is set on the command itself rather than assumed.
+        let proxy = "export HTTPS_PROXY=http://127.0.0.1:7890 "
+            + "HTTP_PROXY=http://127.0.0.1:7890 "
+            + "ALL_PROXY=socks5://127.0.0.1:7890 "
+            + "NO_PROXY=localhost,127.0.0.1,10.0.2.2; "
         if subcommand == "start" {
-            return "rm -f \(log); "
+            return proxy + "rm -f \(log); "
                 + "( if command -v setsid >/dev/null 2>&1; then "
                 + "exec setsid codex login --device-auth; else "
                 + "exec nohup codex login --device-auth; fi ) "
                 + ">\(log) 2>&1 </dev/null & "
                 + "sleep 5; timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
         }
-        return "timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
+        return proxy + "timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
     }
 
     private func queueAuth(_ script: String) {
