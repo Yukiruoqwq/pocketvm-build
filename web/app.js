@@ -18,6 +18,10 @@ const bridge = {
 };
 
 const preview = !bridge.available;
+/// Review only: `?demo=1` fills the panes with sample content. Without it the
+/// preview looks exactly like the device — no conversation, no files, nothing
+/// that is not there.
+const SHOW_DEMO = preview && new URLSearchParams(location.search).has("demo");
 
 // Preview only: the shape is the guest's own answer to `model/list`, filled
 // with what a real Codex account reported when it was asked. Nothing here is
@@ -102,7 +106,7 @@ const state = {
     ],
     network: { enabled: true, portForwards: [] },
   },
-  messages: preview
+  messages: SHOW_DEMO
     ? [
         { role: "user", text: "在这台 iPad 上跑一个 Linux 虚拟机，里面装好 Codex。" },
         { role: "tool", text: "正在运行命令 · cloud-init", running: false },
@@ -110,25 +114,15 @@ const state = {
         { role: "assistant", text: "客户机已就绪：Debian 13 aarch64，24 GiB 磁盘，Codex CLI 0.155.0。" },
       ]
     : [],
-  plan: [
-    { text: "下载并校验系统镜像", state: "done" },
-    { text: "写入 UEFI 变量存储", state: "done" },
-    { text: "扩展虚拟磁盘", state: "done" },
-    { text: "启动并等待 cloud-init", state: "done" },
-    { text: "安装 Node 与 Codex CLI", state: "done" },
-  ],
-  outputs: [
-    { name: "Images/debian-13-genericcloud-arm64.qcow2", size: "321 MB" },
-    { name: "efi_vars.fd", size: "64 MB" },
-    { name: "pocketvm.log", size: "3 KB" },
-    { name: "provision.json", size: "190 B" },
-  ],
-  sources: [
-    { name: "cloud.debian.org · debian-13-genericcloud-arm64", size: "2026-09-14" },
-    { name: "npm · @openai/codex", size: "0.155.0" },
-    { name: "utmapp/qemu · 10.0.12", size: "GPL-2.0" },
-  ],
-  threads: preview
+  // 计划 — the setup the emulator is performing. It exists while the guest is
+  // being installed and not afterwards: a machine that is simply running has no
+  // plan, and inventing one is what made this pane look like a demo.
+  plan: [],
+  // 输出内容 — the files this machine really wrote, listed by the host.
+  outputs: [],
+  // 来源 — what the guest was built from.
+  sources: [],
+  threads: SHOW_DEMO
     ? [
         { title: "虚拟机", active: true },
         { title: "准备 Debian 客户机", running: true },
@@ -222,6 +216,10 @@ function planState(stage, index) {
 function renderPlan() {
   const list = $("planList");
   list.innerHTML = "";
+  // Only while the guest is being installed: the app is behind the gate then,
+  // and once it is in front of it the machine is up and there is nothing left
+  // to plan.
+  if (state.provision.provisioned) return;
   PLAN_STEPS.forEach((text, index) => {
     const row = el("li", planState(state.provision.stage, index), text);
     list.appendChild(row);
@@ -242,7 +240,9 @@ function renderOutputs() {
 function renderSources() {
   const list = $("sourceList");
   list.innerHTML = "";
-  for (const item of state.sources) {
+  // The image the guest was provisioned from, named by the host. Nothing else
+  // is a source of anything in this app.
+  for (const item of state.provision.source ? [{ name: state.provision.source, size: state.provision.image }] : []) {
     const row = el("li");
     row.appendChild(el("span", "name", item.name));
     row.appendChild(el("span", "size", item.size));
@@ -470,19 +470,16 @@ function wireModelMenu() {
   });
 }
 
-function renderThreads(busy) {
+function renderThreads() {
   const list = $("threadList");
   list.innerHTML = "";
-  state.threads.forEach((thread, index) => {
+  state.threads.forEach((thread) => {
     const row = el("li", [thread.active ? "active" : "", thread.running ? "running" : ""].filter(Boolean).join(" "), thread.title);
     row.addEventListener("click", () => {
       $("threadTitle").textContent = thread.title;
     });
     list.appendChild(row);
   });
-  if (!state.threads.length && busy) {
-    list.appendChild(el("li", "active", "虚拟机"));
-  }
 }
 
 // ----------------------------------------------------------------- sidebar
@@ -922,9 +919,11 @@ function applyProvisionState(payload) {
   // at the last number it saw.
   if (payload.fraction === undefined) next.fraction = undefined;
   state.provision = next;
-  if (!state.threads.length) renderThreads(payload.busy);
+  state.outputs = payload.outputs ?? state.outputs;
+  renderThreads();
   renderPlan();
   renderOutputs();
+  renderSources();
   renderAccount();
   renderGate();
   if (!$("settings").hidden) renderSettings();
@@ -1023,9 +1022,9 @@ function wireChrome() {
   const setBottomPanel = (open) => {
     $("bottomPanel").hidden = !open;
     $("menuBottomPanel").checked = open;
-    if (open && typeof fitAddon !== "undefined" && fitAddon) {
-      requestAnimationFrame(() => fitAddon.fit());
-    }
+    // The terminal is attached the first time it is actually visible: opened
+    // while hidden it measures zero and draws nothing.
+    if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());
   };
   $("toggleBottomPanel").addEventListener("click", () => setBottomPanel($("bottomPanel").hidden));
   $("closeBottomPanel").addEventListener("click", () => setBottomPanel(false));
@@ -1361,7 +1360,7 @@ function main() {
   wireAutomations();
   blockZoomGestures();
   $("newThread").classList.add("active");
-  renderThreads(state.provision.busy);
+  renderThreads();
   renderMessages();
   renderPlan();
   renderOutputs();
@@ -1423,6 +1422,8 @@ function main() {
     renderGate();
   }
   if (params.has("panel")) $("app").classList.add("panel-open");
+  // Review shortcut: ?terminal=1 shows the console panel.
+  if (params.has("terminal")) $("toggleBottomPanel").click();
   // Review shortcut: ?models=1 opens the picker so it can be looked at without
   // a mouse.
   if (params.has("models")) $("modelChip").click();

@@ -543,11 +543,14 @@ ul { margin: 0; padding: 0; list-style: none; }
 }
 .tab-item.active { background: var(--bg-active); color: var(--fg); }
 .terminal-host {
-  flex: 1; min-height: 0; background: var(--bg-app);
+  /* The console keeps its own dark surface in both themes: the emulator's
+     palette is written for it, and a transparent background made the text
+     white on white. */
+  flex: 1; min-height: 0; background: #0d0d0d;
   padding: 6px 8px 8px;
 }
 .terminal-host .xterm { height: 100%; }
-.terminal-host .xterm-viewport { background: transparent !important; }
+.terminal-host .xterm-viewport { background: #0d0d0d !important; }
 
 /* -------------------------------------------------------------- settings */
 

@@ -18,6 +18,13 @@ const termBridge = {
 
 let term = null;
 let fitAddon = null;
+let opened = false;
+/// Output that arrived before the panel was ever on screen. The console starts
+/// printing at boot, long before anyone opens it, so throwing that away would
+/// leave the panel empty exactly when somebody finally looks.
+let pending = [];
+let pendingBytes = 0;
+const PENDING_LIMIT = 4 * 1024 * 1024;
 
 function base64ToBytes(b64) {
   const binary = atob(b64);
@@ -33,9 +40,11 @@ function bytesToBase64(text) {
   return btoa(binary);
 }
 
+/// Builds the emulator. It is not attached to the page here: a terminal opened
+/// into a hidden panel measures zero, and its size is what decides how many
+/// rows are drawn, so it is opened the first time it is actually visible.
 function ensureTerminal() {
   if (term) return term;
-
   term = new Terminal({
     convertEol: false,
     cursorBlink: true,
@@ -63,38 +72,64 @@ function ensureTerminal() {
     term.loadAddon(fitAddon);
   }
 
-  term.open(document.getElementById("terminalHost"));
-  if (fitAddon) fitAddon.fit();
-
   // Keystrokes go to the guest as raw bytes.
   term.onData((data) => {
     termBridge.send("terminalInput", { data: bytesToBase64(data) });
   });
 
-  if (termBridge.available) {
-    termBridge.send("terminalReady", { cols: term.cols, rows: term.rows });
-    setTerminalState("已连接");
-  } else {
-    // Browser preview: show something so the emulator itself can be checked.
-    term.writeln("\x1b[2mPocketVM 预览\x1b[0m");
-    term.writeln("\x1b[32mcodex@pocketvm\x1b[0m:\x1b[34m~\x1b[0m$ df -h /");
-    term.writeln("Filesystem      Size  Used Avail Use% Mounted on");
-    term.writeln("/dev/vda1        24G  1.2G   22G   5% /");
+  return term;
+}
+
+/// Attaches the emulator to the panel and hands it everything that arrived
+/// while it was closed. Called when the bottom panel is shown.
+function openTerminal() {
+  const host = document.getElementById("terminalHost");
+  const terminal = ensureTerminal();
+  if (!host) return terminal;
+
+  if (!opened) {
+    terminal.open(host);
+    opened = true;
+    if (termBridge.available) {
+      termBridge.send("terminalReady", { cols: terminal.cols, rows: terminal.rows });
+      setTerminalState("已连接");
+    } else {
+      // Browser preview: something to look at so the emulator itself can be
+      // checked.
+      terminal.writeln("\x1b[2mPocketVM 预览\x1b[0m");
+      terminal.writeln("\x1b[32mcodex@pocketvm\x1b[0m:\x1b[34m~\x1b[0m$ df -h /");
+      terminal.writeln("Filesystem      Size  Used Avail Use% Mounted on");
+      terminal.writeln("/dev/vda1        24G  1.2G   22G   5% /");
+    }
+    window.addEventListener("resize", () => {
+      if (fitAddon) fitAddon.fit();
+      terminal.refresh(0, terminal.rows - 1);
+    });
   }
 
-  window.addEventListener("resize", () => {
-    if (fitAddon) fitAddon.fit();
-  });
-
-  return term;
+  for (const chunk of pending) terminal.write(chunk);
+  pending = [];
+  pendingBytes = 0;
+  if (fitAddon) fitAddon.fit();
+  terminal.refresh(0, terminal.rows - 1);
+  return terminal;
 }
 
 /// Called by the native bridge with serial output.
 function terminalReceive(payload) {
-  if (!term || !payload) return;
-  if (typeof payload.base64 === "string") {
-    term.write(base64ToBytes(payload.base64));
+  if (!payload) return;
+  if (typeof payload.base64 !== "string") return;
+  const bytes = base64ToBytes(payload.base64);
+  if (!opened) {
+    // Keep the tail until somebody opens the panel.
+    pending.push(bytes);
+    pendingBytes += bytes.length;
+    while (pendingBytes > PENDING_LIMIT && pending.length > 1) {
+      pendingBytes -= pending.shift().length;
+    }
+    return;
   }
+  term.write(bytes);
 }
 
 function setTerminalState(text) {

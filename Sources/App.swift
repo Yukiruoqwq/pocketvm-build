@@ -495,6 +495,10 @@ final class VMModel: ObservableObject {
 
     func pushProvisionState() {
         let stage = provisioner.stage
+        // Read from disk rather than remembered, so the frontend's 输出内容 list
+        // cannot drift from what the machine has actually written. Empty until
+        // there is a guest, because before that there is nothing to show.
+        let outputs: [[String: String]] = provisioner.isProvisioned ? documentsListing() : []
         var payload: [String: Any] = [
             "stage": stage.description,
             "busy": stage.isActive,
@@ -502,6 +506,8 @@ final class VMModel: ObservableObject {
             "image": provisioner.image.displayName,
             "imageBytes": Int(provisioner.image.capacityGiB),
             "host": provisioner.image.remoteURL.host ?? "",
+            "source": "\(provisioner.image.remoteURL.host ?? "") · \(provisioner.image.remoteURL.lastPathComponent)",
+            "outputs": outputs,
             "password": provisioner.state.password,
             "running": isRunning,
             "codexReady": codexReady,
@@ -516,6 +522,35 @@ final class VMModel: ObservableObject {
         default: break
         }
         pushToWeb?(["action": "provisionState", "payload": payload])
+    }
+
+    /// The files in the app's documents directory, one level deep: the disk
+    /// image lives in `Images/`, and everything else sits beside it.
+    private func documentsListing() -> [[String: String]] {
+        let root = VMConfiguration.documentsDirectory
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: root.path)) ?? []
+        var entries: [[String: String]] = []
+        for name in names.sorted() {
+            let url = root.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { continue }
+            if isDirectory.boolValue {
+                let children = (try? FileManager.default.contentsOfDirectory(atPath: url.path)) ?? []
+                for child in children.sorted() {
+                    let childURL = url.appendingPathComponent(child)
+                    let size = (try? childURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    entries.append(["name": "\(name)/\(child)", "size": Self.formattedBytes(size)])
+                }
+            } else {
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                entries.append(["name": name, "size": Self.formattedBytes(size)])
+            }
+        }
+        return Array(entries.prefix(12))
+    }
+
+    private static func formattedBytes(_ count: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
     }
 
     func pushAuthState() {
