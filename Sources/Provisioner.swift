@@ -353,6 +353,14 @@ final class Provisioner: ObservableObject {
         if let subscription = proxySubscription() {
             resources["/proxy-url.txt"] = .text(subscription + "\n")
         }
+        // A copy of the proxy's own binary, if one was left on the device. The
+        // guest cannot always reach GitHub — and when it can, it is often slow
+        // enough that a 20 MB download looks like a hang. The app's helper
+        // server is on the emulated network, so this is instant.
+        let binary = VMConfiguration.documentsDirectory.appendingPathComponent("mihomo.gz")
+        if let data = try? Data(contentsOf: binary), !data.isEmpty {
+            resources["/mihomo.gz"] = SeedServer.Resource(contentType: "application/gzip", body: data)
+        }
         // Offered on every boot, not only the first.
         //
         // cloud-init treats `runcmd` as once per instance and `bootcmd` as once

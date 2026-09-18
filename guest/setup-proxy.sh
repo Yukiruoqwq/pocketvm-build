@@ -25,15 +25,36 @@ say() {
 
 VERSION="${MIHOMO_VERSION:-v1.19.31}"
 say "下载代理内核 $VERSION"
-asset="https://github.com/MetaCubeX/mihomo/releases/download/$VERSION/mihomo-linux-arm64-$VERSION.gz"
 if [ -x /usr/local/bin/mihomo ]; then
   say "内核已存在，跳过下载"
 else
-  if ! curl -fsSL --retry 2 --max-time 300 "$asset" | gzip -dc >/usr/local/bin/mihomo; then
-    say "下载代理内核失败：客户机连不上 GitHub，或者这个版本号已经下架"
+  # GitHub from inside a guest on a Chinese network is often reachable and very
+  # slow, and an interrupted transfer looks exactly like a hang. The first two
+  # addresses are on the local network, where the app's own machine can hold a
+  # copy; the last one is the real thing, and a proxy prefix for when it is not.
+  sources="
+http://192.168.1.24:8770/mihomo.gz
+http://10.0.2.2:8474/mihomo.gz
+https://github.com/MetaCubeX/mihomo/releases/download/$VERSION/mihomo-linux-arm64-$VERSION.gz
+https://ghfast.top/https://github.com/MetaCubeX/mihomo/releases/download/$VERSION/mihomo-linux-arm64-$VERSION.gz"
+  got=0
+  for source in $sources; do
+    [ -n "$source" ] || continue
+    say "尝试 $source"
+    if curl -fL --retry 1 --connect-timeout 15 --max-time 600 --progress-bar \
+        "$source" -o /tmp/mihomo.gz 2>/dev/ttyAMA0 \
+        && gzip -dc /tmp/mihomo.gz >/usr/local/bin/mihomo \
+        && chmod 0755 /usr/local/bin/mihomo \
+        && /usr/local/bin/mihomo -v >/dev/null 2>&1; then
+      got=1
+      break
+    fi
+    rm -f /usr/local/bin/mihomo
+  done
+  if [ "$got" != "1" ]; then
+    say "下载代理内核失败：几个来源都没成功"
     exit 1
   fi
-  chmod 0755 /usr/local/bin/mihomo
 fi
 say "内核 $(/usr/local/bin/mihomo -v 2>/dev/null | head -n1)"
 
