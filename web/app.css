@@ -1,0 +1,106 @@
+/* Only the glue the Codex bundle expects from its host page. Everything else
+   comes from the app's own stylesheets in vendor/codex/. */
+
+:root {
+  --app-shell-left-panel-width: 275px;
+  --app-shell-right-panel-width: 400px;
+}
+
+/* Narrow review windows keep all three columns, just tighter. */
+@media (max-width: 1200px) {
+  :root {
+    --app-shell-left-panel-width: 248px;
+    --app-shell-right-panel-width: 320px;
+  }
+}
+
+/* The desktop host injects this rule at runtime, so it is not in the bundle. */
+:root[data-codex-window-type="electron"],
+:root[data-codex-window-type="electron"] body {
+  background-color: var(--app-color-background-surface-under);
+  background-image: none;
+}
+
+:root[data-codex-window-type="electron"] {
+  --codex-corner-shape: round;
+  overflow: hidden;
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+#root {
+  width: 100%;
+  height: 100%;
+}
+
+._Layout_xmgnx_2 {
+  height: 100%;
+}
+
+#sidebar {
+  --app-shell-left-panel-width: 275px;
+  flex: 0 0 auto;
+  height: 100%;
+  background: color-mix(in srgb, var(--color-surface-tertiary) 70%, transparent);
+}
+
+body[data-sidebar-collapsed="true"] #sidebar {
+  display: none;
+}
+
+#sidePanel {
+  width: clamp(248px, 32%, var(--app-shell-right-panel-width));
+  height: 100%;
+  background: var(--app-shell-panel-background, var(--app-color-background-surface));
+}
+
+body[data-side-panel-hidden="true"] #sidePanel {
+  display: none;
+}
+
+/* The chat column keeps a readable measure and stays centred in the surface. */
+._MainContentFrame_xmgnx_2 {
+  min-width: 0;
+}
+
+/* The window frame: window background, the main surface lifted on top of it,
+   with the hairline outline and the rounded top-left corner the app uses on
+   desktop. */
+._MainContentSurface_xmgnx_2[data-app-shell-main-surface="default"] {
+  background-color: var(--color-surface);
+  outline: 1px solid var(--app-color-border);
+  outline-offset: -1px;
+}
+
+:root[data-codex-os="win32"] ._MainContentSurface_xmgnx_2[data-app-shell-main-surface="default"] {
+  border-top-left-radius: var(--radius-lg);
+  overflow: visible;
+}
+
+#composerInput {
+  height: auto;
+  max-height: 12rem;
+  font: inherit;
+}
+
+#messages {
+  overflow-anchor: none;
+}
+/* Surfaces sampled from the running desktop app on this machine, so the review
+   build matches what the user actually sees. The generated theme in
+   vendor/codex/app-color.raw.css is the neutral default and is close but not
+   identical, because the desktop app applies the signed-in accent theme. */
+:root[data-theme="dark"] {
+  --app-color-background-surface-under: #1d2025;
+  --app-color-background-surface: #181818;
+  --color-surface: #181818;
+  --color-surface-tertiary: #1d2025;
+  --color-surface-elevated-secondary: #212227;
+  --color-background-primary-ghost-hover: rgba(255, 255, 255, 0.08);
+}

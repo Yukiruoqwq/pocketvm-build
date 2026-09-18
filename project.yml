@@ -27,8 +27,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: PocketVM
-        CFBundleShortVersionString: "0.1"
-        CFBundleVersion: "1"
+        CFBundleShortVersionString: "0.2"
+        CFBundleVersion: "2"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}

@@ -355,9 +355,28 @@ final class Provisioner: ObservableObject {
             permissions: '0755'
             content: |
         \(indent(authScript(), spaces: 6))
+          # Announcing readiness from inside the guest is what lets the frontend
+          # come forward on its own instead of being typed at. It is enabled
+          # rather than started here: on this first boot the CLI does not exist
+          # yet, and the provisioning script reports the same thing its own way.
+          - path: /etc/systemd/system/pocketvm-ready.service
+            permissions: '0644'
+            content: |
+              [Unit]
+              Description=PocketVM readiness marker
+              After=multi-user.target
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/sh -c 'command -v codex >/dev/null 2>&1 && echo POCKETVM_CODEX_READY > /dev/ttyAMA0 || true'
+
+              [Install]
+              WantedBy=multi-user.target
         runcmd:
           - systemctl daemon-reload
           - systemctl enable --now serial-getty@ttyAMA0.service
+          - systemctl enable pocketvm-ready.service
           - /usr/local/sbin/pocketvm-provision.sh
         """
     }

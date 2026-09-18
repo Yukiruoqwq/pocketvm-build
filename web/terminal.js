@@ -73,15 +73,17 @@ function ensureTerminal() {
 
   if (termBridge.available) {
     termBridge.send("terminalReady", { cols: term.cols, rows: term.rows });
+    setTerminalState("已连接");
   } else {
     // Browser preview: show something so the emulator itself can be checked.
-    term.writeln("\x1b[2m浏览器预览模式：没有连接到虚拟机串口。\x1b[0m");
-    term.writeln("\x1b[32m$\x1b[0m echo hello");
-    term.writeln("hello");
+    term.writeln("\x1b[2mPocketVM 预览\x1b[0m");
+    term.writeln("\x1b[32mcodex@pocketvm\x1b[0m:\x1b[34m~\x1b[0m$ df -h /");
+    term.writeln("Filesystem      Size  Used Avail Use% Mounted on");
+    term.writeln("/dev/vda1        24G  1.2G   22G   5% /");
   }
 
   window.addEventListener("resize", () => {
-    if (fitAddon && !document.getElementById("terminalPanel").hidden) fitAddon.fit();
+    if (fitAddon) fitAddon.fit();
   });
 
   return term;
@@ -93,18 +95,6 @@ function terminalReceive(payload) {
   if (typeof payload.base64 === "string") {
     term.write(base64ToBytes(payload.base64));
   }
-}
-
-function openTerminal() {
-  document.getElementById("terminalPanel").hidden = false;
-  ensureTerminal();
-  if (fitAddon) requestAnimationFrame(() => fitAddon.fit());
-  termBridge.send("terminalOpened");
-}
-
-function closeTerminal() {
-  document.getElementById("terminalPanel").hidden = true;
-  termBridge.send("terminalClosed");
 }
 
 function setTerminalState(text) {

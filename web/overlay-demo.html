@@ -1,0 +1,486 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>PocketVM · 状态遮罩演示</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --text-xs: 11px; --text-sm: 12px; --text-base: 14px; --text-lg: 16px;
+    --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --radius-sm: 6px; --radius: 10px; --radius-lg: 14px; --radius-pill: 999px;
+    --bg-app: light-dark(#ffffff, #0d0d0d);
+    --bg-raised: light-dark(#ffffff, #181818);
+    --bg-hover: light-dark(#f3f3f3, #1c1c1c);
+    --bg-active: light-dark(#ededed, #212121);
+    --border-soft: light-dark(#ededed, #1c1c1c);
+    --border: light-dark(#dfdfdf, #282828);
+    --fg: light-dark(#1a1c1f, #dfdfdf);
+    --fg-dim: light-dark(#5d5d5d, #afafaf);
+    --fg-faint: light-dark(#8f8f8f, #8f8f8f);
+    --accent: light-dark(#0285ff, #339cff);
+  }
+  * { box-sizing: border-box; }
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: var(--bg-app); color: var(--fg);
+    font: var(--text-base)/1.5 var(--font-sans); -webkit-font-smoothing: antialiased; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+
+  .demo-app {
+    position: fixed; inset: 0; width: 100%; height: 100%; border: 0;
+    opacity: 1;
+  }
+  /* The app settles as the glass lifts, instead of appearing in one frame. */
+  @keyframes settle {
+    from { transform: scale(1.02); opacity: .4; }
+    to { transform: none; opacity: 1; }
+  }
+  body.entered .demo-app { animation: settle .45s ease; pointer-events: auto; }
+
+  /* The blocker: everything under it is blurred and cannot be tapped. */
+  .scrim {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    /* The block sits below the optical centre, the way the app's own empty
+       states do, instead of dead-centre. */
+    padding: 13vh 24px 24px;
+    background: light-dark(rgb(255 255 255 / 10%), rgb(0 0 0 / 16%));
+    backdrop-filter: blur(38px) saturate(180%);
+    -webkit-backdrop-filter: blur(38px) saturate(180%);
+    transition: opacity .45s ease, backdrop-filter .45s ease, -webkit-backdrop-filter .45s ease;
+  }
+  /* The hand-off into the app: the glass lifts instead of cutting. */
+  .scrim.leaving {
+    opacity: 0; pointer-events: none;
+    backdrop-filter: blur(0); -webkit-backdrop-filter: blur(0);
+  }
+  .demo-app { pointer-events: none; }
+
+  .card {
+    width: min(340px, 100%);
+    padding: 0;
+    background: none;
+    border: 0;
+    box-shadow: none;
+    text-align: center;
+  }
+  .card-icon {
+    width: 28px; height: 28px; margin: 0 auto 20px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--fg-dim);
+  }
+  .card-icon svg { width: 28px; height: 28px; }
+  .card h1 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: .01em; }
+  .card p { margin: 18px 0 0; font-size: var(--text-base); color: var(--fg-dim); }
+  .card .hint { margin-top: 12px; font-size: var(--text-sm); color: var(--fg-faint); }
+
+  .facts {
+    margin: 26px 0 0; padding: 0;
+  }
+  .facts div {
+    display: flex; justify-content: center; align-items: baseline; gap: 10px;
+    padding: 11px 0;
+    border-top: 1px solid light-dark(rgb(0 0 0 / 8%), rgb(255 255 255 / 10%));
+    font-size: var(--text-sm);
+  }
+  .facts div:last-child {
+    border-bottom: 1px solid light-dark(rgb(0 0 0 / 8%), rgb(255 255 255 / 10%));
+  }
+  .facts dt { margin: 0; color: var(--fg-faint); }
+  .facts dd { margin: 0; color: var(--fg-dim); text-align: center; }
+
+  .actions { display: flex; gap: 10px; margin-top: 28px; }
+  .primary, .ghost {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 38px; padding: 0 16px; border-radius: var(--radius-pill);
+    font-size: var(--text-base);
+  }
+  .status {
+    display: inline-flex; align-items: center; justify-content: center;
+    height: 38px; padding: 0 16px; border-radius: var(--radius-pill);
+    font-size: var(--text-base);
+  }
+  .primary { flex: 1; background: var(--fg); color: var(--bg-app); }
+  .primary:hover { opacity: .9; }
+  /* In-progress state: black with a hairline white border, not a call to
+     action. */
+  .status {
+    flex: 1; background: #000; color: #fff;
+    border: 1px solid rgb(255 255 255 / 32%);
+    cursor: default;
+  }
+  .ghost { border: 1px solid light-dark(rgb(0 0 0 / 14%), rgb(255 255 255 / 16%)); color: var(--fg-dim); }
+  .ghost:hover { background: var(--bg-hover); }
+
+  /* Review-only switch; the real app has no such control. */
+  .demo-switch {
+    position: fixed; z-index: 60; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 4px; padding: 4px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border); border-radius: var(--radius-pill);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 24%);
+    align-items: center;
+  }
+  .demo-switch button {
+    height: 26px; padding: 0 12px; border-radius: var(--radius-pill);
+    font-size: var(--text-sm); color: var(--fg-dim);
+    white-space: nowrap;
+  }
+  .demo-switch button.active { background: var(--bg-active); color: var(--fg); }
+  .demo-switch .divider { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+  .demo-switch button.on { background: var(--fg); color: var(--bg-app); }
+
+  /* Inline editor: pick an element and act on it. */
+  body.editing .card :is(h1, p, dt, dd, button) {
+    outline: 1px dashed light-dark(rgb(0 0 0 / 18%), rgb(255 255 255 / 22%));
+    outline-offset: 2px;
+    cursor: text;
+  }
+  body.outlines .card *:not(.element-tools):not(.element-tools *) {
+    outline: 1px dashed light-dark(rgb(0 0 0 / 22%), rgb(255 255 255 / 26%));
+    outline-offset: 1px;
+  }
+  .hover-target { outline: 1px solid var(--accent) !important; outline-offset: 2px; }
+
+  .element-tools {
+    position: fixed; z-index: 70;
+    display: flex; gap: 2px; padding: 3px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border); border-radius: var(--radius-pill);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  }
+  .element-tools[hidden] { display: none; }
+  .element-tools button {
+    width: 24px; height: 24px; border-radius: 50%;
+    font-size: var(--text-sm); line-height: 1; color: var(--fg-dim);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .element-tools button:hover { background: var(--bg-hover); color: var(--fg); }
+
+  .export-panel {
+    position: fixed; z-index: 80; inset: 60px 24px 24px;
+    display: flex; flex-direction: column; gap: 8px;
+    padding: 12px;
+    background: var(--bg-raised);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 24px 64px rgb(0 0 0 / 36%);
+  }
+  .export-panel[hidden] { display: none; }
+  .export-panel textarea {
+    flex: 1; width: 100%; resize: none; padding: 10px;
+    font: var(--text-sm)/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: var(--fg); background: var(--bg-app);
+    border: 1px solid var(--border); border-radius: var(--radius-sm); outline: none;
+  }
+  .export-panel .row { display: flex; gap: 8px; align-items: center; }
+  .export-panel .row span { font-size: var(--text-sm); color: var(--fg-dim); flex: 1; }
+
+  .progress {
+    margin-top: 24px; height: 3px; border-radius: 2px; overflow: hidden;
+    background: light-dark(rgb(0 0 0 / 10%), rgb(255 255 255 / 12%));
+  }
+  .progress span { display: block; height: 100%; width: 42%; background: var(--accent); }
+  .progress.indeterminate span {
+    width: 34%;
+    animation: slide 1.5s cubic-bezier(.4, 0, .2, 1) infinite;
+  }
+  @keyframes slide {
+    0% { transform: translateX(-110%); }
+    100% { transform: translateX(300%); }
+  }
+</style>
+</head>
+<body>
+<iframe class="demo-app" src="index.html" title="应用界面"></iframe>
+
+<div class="scrim">
+  <div class="card" id="card"></div>
+</div>
+
+<div class="demo-switch">
+  <button type="button" data-state="install">未安装</button>
+  <button type="button" data-state="stopped">未启动</button>
+  <button type="button" data-state="installing">安装中</button>
+  <button type="button" data-state="starting">启动中</button>
+  <button type="button" id="enterApp">进入</button>
+  <span class="divider"></span>
+  <button type="button" id="toggleEdit">编辑</button>
+  <button type="button" id="toggleOutlines">边框</button>
+  <button type="button" id="exportHtml">导出</button>
+  <button type="button" id="resetAll">重置</button>
+</div>
+
+<div class="element-tools" id="elementTools" hidden>
+  <button type="button" data-act="delete" title="删除这个元素">×</button>
+  <button type="button" data-act="border" title="切换边框">▢</button>
+  <button type="button" data-act="clear" title="清空文字">⌫</button>
+  <button type="button" data-act="up" title="上移">↑</button>
+  <button type="button" data-act="down" title="下移">↓</button>
+</div>
+
+<div class="export-panel" id="exportPanel" hidden>
+  <textarea id="exportArea" spellcheck="false"></textarea>
+  <div class="row">
+    <span>这就是你改完的卡片 HTML，全选复制发给我，或者直接说哪里改。</span>
+    <button class="ghost" type="button" id="closeExport">关闭</button>
+  </div>
+</div>
+
+<script>
+  const ICON_INSTALL =
+    '<svg viewBox="0 0 20 20" fill="none"><path d="M10 3v9m0 0 3.2-3.2M10 12 6.8 8.8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 14.5v1A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5v-1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+  const ICON_POWER =
+    '<svg viewBox="0 0 20 20" fill="none"><path d="M10 3.2v6.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M5.6 5.9a6.4 6.4 0 1 0 8.8 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+  const STATES = {
+    install: {
+      icon: ICON_INSTALL,
+      title: "未安装",
+      body: "需要先下载客户机系统",
+      facts: ["Debian 13 · aarch64", "cloud.debian.org · 321 MB", "24 GiB"],
+      primary: "安装",
+    },
+    installing: {
+      icon: ICON_INSTALL,
+      title: "安装中",
+      facts: ["下载镜像 42%", "2 / 5"],
+      // These are the real Provisioner.Stage lines, in the order the app hits
+      // them on a first run.
+      detail: [
+        "下载镜像 42%",
+        "校验镜像 88%",
+        "准备启动参数",
+        "首次启动，等待客户机",
+        "安装 Node 与 Codex CLI",
+      ],
+      detailAt: 0,
+      status: "安装中",
+      progress: true,
+    },
+    starting: {
+      icon: ICON_POWER,
+      title: "启动中",
+      facts: ["Debian 13 · aarch64", "正在启动 QEMU"],
+      // Normal boots: QEMU, the guest's own boot, then the CLI.
+      detail: ["正在启动 QEMU", "正在引导系统", "正在启动 Codex CLI"],
+      detailAt: 1,
+      status: "启动中",
+      progress: "indeterminate",
+    },
+    stopped: {
+      icon: ICON_POWER,
+      title: "未运行",
+      facts: ["Debian 13 · aarch64", "4 核 · 4 GiB 内存", "今天 09:12"],
+      primary: "启动",
+      secondary: "设置",
+    },
+  };
+
+  const card = document.getElementById("card");
+  const switchBox = document.querySelector(".demo-switch");
+  const tools = document.getElementById("elementTools");
+  const exportPanel = document.getElementById("exportPanel");
+  const exportArea = document.getElementById("exportArea");
+  let hovered = null;
+  let editing = false;
+  let outlines = false;
+  let detailTimer = null;
+
+  // v3: the built-in copy follows the latest edit, so older saved versions
+  // (which still had the removed 选择镜像 button) are not replayed.
+  const storageKey = (state) => `pocketvm.overlay.v3.${state}`;
+
+  function render(state) {
+    const spec = STATES[state];
+    if (detailTimer) {
+      clearInterval(detailTimer);
+      detailTimer = null;
+    }
+    // Leaving the app again puts the glass back before the copy is swapped.
+    document.querySelector(".scrim").classList.remove("leaving");
+    document.body.classList.remove("entered");
+    const saved = localStorage.getItem(storageKey(state));
+    const facts = spec.facts.slice();
+    if (spec.detail) facts[spec.detailAt ?? facts.length - 1] = spec.detail[0];
+    card.innerHTML =
+      saved ??
+      `<div class="card-icon">${spec.icon}</div>` +
+        `<h1>${spec.title}</h1>` +
+        (spec.body ? `<p>${spec.body}</p>` : "") +
+        `<dl class="facts">${facts.map((fact) => `<div><dd>${fact}</dd></div>`).join("")}</dl>` +
+        (spec.progress
+          ? `<div class="progress${spec.progress === "indeterminate" ? " indeterminate" : ""}"><span></span></div>`
+          : "") +
+        '<div class="actions">' +
+        (spec.secondary ? `<button class="ghost" type="button">${spec.secondary}</button>` : "") +
+        (spec.status
+          ? `<button class="status" type="button" aria-disabled="true">${spec.status}</button>`
+          : `<button class="primary" type="button">${spec.primary}</button>`) +
+        "</div>" +
+        (spec.hint ? `<p class="hint">${spec.hint}</p>` : "");
+    // Review affordance: walk the real stage lines so the wording and order can
+    // be checked without waiting for a boot.
+    if (spec.detail && !saved) {
+      let step = 0;
+      const rows = card.querySelectorAll(".facts dd");
+      const row = rows[spec.detailAt ?? rows.length - 1];
+      detailTimer = setInterval(() => {
+        if (!row.isConnected) return;
+        step = (step + 1) % spec.detail.length;
+        row.textContent = spec.detail[step];
+      }, 1800);
+    }
+    applyEditMode();
+    for (const button of switchBox.querySelectorAll("button")) {
+      button.classList.toggle("active", button.dataset.state === state);
+    }
+    const params = new URLSearchParams(location.search);
+    params.set("state", state);
+    history.replaceState(null, "", `?${params}`);
+  }
+
+  function currentState() {
+    return new URLSearchParams(location.search).get("state") ?? "install";
+  }
+
+  function save() {
+    if (!editing) return;
+    localStorage.setItem(storageKey(currentState()), card.innerHTML);
+  }
+
+  function applyEditMode() {
+    card.contentEditable = "false";
+    for (const node of card.querySelectorAll("h1,p,dt,dd,button")) {
+      node.contentEditable = editing ? "true" : "false";
+    }
+    document.body.classList.toggle("editing", editing);
+    document.body.classList.toggle("outlines", outlines);
+    if (!editing) {
+      tools.hidden = true;
+      hovered = null;
+    }
+  }
+
+  function showTools(node) {
+    hovered = node;
+    const box = node.getBoundingClientRect();
+    tools.hidden = false;
+    const width = 168;
+    tools.style.left = `${Math.min(Math.max(8, box.right - width), window.innerWidth - width - 8)}px`;
+    tools.style.top = `${Math.min(Math.max(8, box.top - 30), window.innerHeight - 40)}px`;
+  }
+
+  card.addEventListener("mouseover", (event) => {
+    if (!editing) return;
+    const node = event.target.closest("h1,p,dt,dd,button,div");
+    if (!node || !card.contains(node)) return;
+    if (tools.contains(event.target)) return;
+    showTools(node);
+  });
+  card.addEventListener("click", (event) => {
+    if (!editing) return;
+    if (event.target.closest("button") && !event.target.isContentEditable) event.preventDefault();
+  });
+
+  tools.addEventListener("click", (event) => {
+    const action = event.target.dataset?.act;
+    if (!action || !hovered) return;
+    event.stopPropagation();
+    if (action === "delete") {
+      hovered.remove();
+      tools.hidden = true;
+    } else if (action === "clear") {
+      hovered.textContent = "";
+    } else if (action === "border") {
+      const on = hovered.style.border && hovered.style.border !== "none";
+      hovered.style.border = on ? "none" : "1px dashed var(--accent)";
+      hovered.style.padding = on ? "0" : "6px";
+    } else if (action === "up" && hovered.previousElementSibling) {
+      hovered.parentElement.insertBefore(hovered, hovered.previousElementSibling);
+    } else if (action === "down" && hovered.nextElementSibling) {
+      hovered.parentElement.insertBefore(hovered.nextElementSibling, hovered);
+    }
+    showTools(hovered);
+    save();
+  });
+
+  document.getElementById("toggleEdit").addEventListener("click", (event) => {
+    editing = !editing;
+    event.currentTarget.classList.toggle("on", editing);
+    event.currentTarget.textContent = editing ? "编辑中" : "编辑";
+    applyEditMode();
+  });
+  document.getElementById("toggleOutlines").addEventListener("click", (event) => {
+    outlines = !outlines;
+    event.currentTarget.classList.toggle("on", outlines);
+    applyEditMode();
+  });
+  document.getElementById("exportHtml").addEventListener("click", () => {
+    exportArea.value = card.outerHTML.replace(/></g, ">\n<");
+    exportPanel.hidden = false;
+    exportArea.focus();
+    exportArea.select();
+  });
+  document.getElementById("closeExport").addEventListener("click", () => {
+    exportPanel.hidden = true;
+  });
+  document.getElementById("resetAll").addEventListener("click", () => {
+    localStorage.removeItem(storageKey(currentState()));
+    render(currentState());
+  });
+  card.addEventListener("input", save);
+  card.addEventListener("blur", save, true);
+  document.addEventListener("keydown", (event) => {
+    if (!editing || event.key !== "Escape") return;
+    tools.hidden = true;
+    save();
+  });
+
+  for (const button of switchBox.querySelectorAll("button[data-state]")) {
+    button.addEventListener("click", () => render(button.dataset.state));
+  }
+
+  // The hand-off: the glass lifts and the app settles in behind it. In the real
+  // app this fires once the guest's Codex CLI reports ready.
+  document.getElementById("enterApp").addEventListener("click", () => {
+    document.querySelector(".scrim").classList.add("leaving");
+    document.body.classList.add("entered");
+    for (const button of switchBox.querySelectorAll("button")) button.classList.remove("active");
+    document.getElementById("enterApp").classList.add("active");
+    history.replaceState(null, "", "?state=entered");
+  });
+  // Review helper: ?theme=light|dark forces the same theme on the demo and on
+  // the app behind it, so both halves of the look can be checked.
+  const params = new URLSearchParams(location.search);
+  const theme = params.get("theme");
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector(".demo-app").src = `index.html?theme=${theme}`;
+  }
+
+  const initial = params.get("state") ?? "install";
+  if (initial === "entered") {
+    render("install");
+    document.getElementById("enterApp").click();
+  } else {
+    render(STATES[initial] ? initial : "install");
+  }
+
+  if (params.get("edit") === "1") {
+    editing = true;
+    const button = document.getElementById("toggleEdit");
+    button.classList.add("on");
+    button.textContent = "编辑中";
+    applyEditMode();
+  }
+  if (params.get("outlines") === "1") {
+    outlines = true;
+    document.getElementById("toggleOutlines").classList.add("on");
+    applyEditMode();
+  }
+</script>
+</body>
+</html>

@@ -21,6 +21,8 @@ struct WebUIView: UIViewRepresentable {
         view.backgroundColor = UIColor(red: 0.051, green: 0.051, blue: 0.051, alpha: 1)
         view.scrollView.bounces = false
         view.scrollView.contentInsetAdjustmentBehavior = .never
+        view.navigationDelegate = context.coordinator
+        WebUIView.disableZoom(on: view)
         context.coordinator.webView = view
         // Console output is pushed rather than polled: the terminal has to see
         // bytes as they arrive, not on the next frontend request.
@@ -29,6 +31,26 @@ struct WebUIView: UIViewRepresentable {
         }
         context.coordinator.load(into: view)
         return view
+    }
+
+    /// The tablet keeps its own scale. The viewport meta and the frontend's own
+    /// gesture handlers cover the page; this covers the scroll view, which
+    /// would otherwise still zoom on a pinch or a double tap. It is applied
+    /// again when the page finishes loading, because a zooming recogniser
+    /// installed after the first pass would not be covered by the first one.
+    static func disableZoom(on view: WKWebView) {
+        view.scrollView.minimumZoomScale = 1
+        view.scrollView.maximumZoomScale = 1
+        view.scrollView.bouncesZoom = false
+        view.scrollView.pinchGestureRecognizer?.isEnabled = false
+        for recognizer in view.scrollView.gestureRecognizers ?? [] {
+            if let pinch = recognizer as? UIPinchGestureRecognizer {
+                pinch.isEnabled = false
+            }
+            if let tap = recognizer as? UITapGestureRecognizer, tap.numberOfTapsRequired == 2 {
+                tap.isEnabled = false
+            }
+        }
     }
 
     func updateUIView(_ view: WKWebView, context: Context) {
@@ -40,7 +62,7 @@ struct WebUIView: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         var model: VMModel
         weak var webView: WKWebView?
 
@@ -53,6 +75,10 @@ struct WebUIView: UIViewRepresentable {
             }
             let index = dir.appendingPathComponent("index.html")
             view.loadFileURL(index, allowingReadAccessTo: dir)
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            WebUIView.disableZoom(on: webView)
         }
 
         func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -121,6 +147,36 @@ struct WebUIView: UIViewRepresentable {
                 if let text = payload?["text"] as? String {
                     model.handlePrompt(text)
                 }
+
+            case "getAutomations":
+                model.pushAutomations()
+
+            case "saveAutomation":
+                if let payload { model.upsertAutomation(payload) }
+
+            case "deleteAutomation":
+                if let id = payload?["id"] as? String { model.removeAutomation(id: id) }
+
+            case "toggleAutomation":
+                if let id = payload?["id"] as? String, let status = payload?["status"] as? String {
+                    model.setAutomationStatus(id: id, status: status)
+                }
+
+            case "runAutomation":
+                model.appendStatus("已请求立即运行该任务。")
+
+            case "scheduleTask":
+                if let text = payload?["text"] as? String {
+                    model.upsertAutomation(["title": text, "cadence": "daily", "time": "22:00", "status": "active"])
+                    model.appendStatus("已记录要安排的事，调度器接通后会按它执行。")
+                }
+
+            case "setModel":
+                // Remembered for when the guest's Codex CLI channel is wired.
+                UserDefaults.standard.set(payload, forKey: "pocketvm.model")
+
+            case "pickFiles", "pickPhotos", "pickRemoteFile":
+                model.appendStatus("此构建还没有接入系统选择器。")
 
             case "terminalInput":
                 // The frontend sends base64 bytes; hand the guest exactly those.

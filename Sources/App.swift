@@ -15,12 +15,21 @@ final class VMModel: ObservableObject {
     @Published var consoleText: String = ""
     @Published var status: String = "idle"
     @Published var isRunning = false
+    /// Set once the guest has answered the readiness probe. QEMU accepting its
+    /// arguments says nothing about the machine being usable, so the frontend
+    /// stays behind the gate until this is true.
+    @Published private(set) var codexReady = false
+    /// The line the gate shows while the machine is coming up.
+    @Published private(set) var bootDetail = ""
     @Published var diagnostics: [String] = []
     @Published var configurationSummary: String = ""
     /// Authoritative VM description. The frontend only ever sees a copy.
     @Published var configuration: VMConfiguration?
     /// Messages shown in the frontend's conversation pane.
     @Published var transcript: [[String: Any]] = []
+    /// 定时任务 — the scheduled tasks the frontend lists. Persisted so the list
+    /// survives a relaunch. Firing them on time still needs the scheduler.
+    @Published var automations: [[String: Any]] = []
 
     let provisioner = Provisioner()
     let auth = CodexAuth()
@@ -32,6 +41,7 @@ final class VMModel: ObservableObject {
     /// character. Lines are only interpreted once they are complete.
     private var consoleBuffer = Data()
     private var observers: [AnyCancellable] = []
+    private var probeTask: Task<Void, Never>?
 
     /// Installed by the web view so console bytes can reach the terminal.
     var pushToWeb: (([String: Any]) -> Void)?
@@ -54,8 +64,12 @@ final class VMModel: ObservableObject {
         }
         host.onExit = { [weak self] status in
             Task { @MainActor in
-                self?.isRunning = false
-                self?.status = "exited (\(status))"
+                guard let self else { return }
+                self.isRunning = false
+                self.status = "exited (\(status))"
+                self.probeTask?.cancel()
+                self.probeTask = nil
+                self.pushProvisionState()
             }
         }
         provisioner.onLog = { [weak self] line in
@@ -63,8 +77,12 @@ final class VMModel: ObservableObject {
         }
         provisioner.onFinished = { [weak self] state in
             Task { @MainActor in
-                self?.appendStatus("系统准备完成，登录口令 \(state.password)")
-                self?.refreshCodexStatus()
+                guard let self else { return }
+                self.appendStatus("系统准备完成，登录口令 \(state.password)")
+                // The guest only reports this after `codex --version` worked
+                // inside it, so the machine is usable at the same moment.
+                self.markCodexReady()
+                self.refreshCodexStatus()
             }
         }
 
@@ -83,6 +101,7 @@ final class VMModel: ObservableObject {
             .store(in: &observers)
 
         reloadConfiguration()
+        loadAutomations()
     }
 
     func reloadConfiguration() {
@@ -122,6 +141,54 @@ final class VMModel: ObservableObject {
         pushMessages()
     }
 
+    // ------------------------------------------------------------- 定时任务
+
+    private static let automationsKey = "pocketvm.automations"
+
+    func loadAutomations() {
+        guard let data = UserDefaults.standard.data(forKey: Self.automationsKey),
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else { return }
+        automations = list
+    }
+
+    private func persistAutomations() {
+        guard let data = try? JSONSerialization.data(withJSONObject: automations) else { return }
+        UserDefaults.standard.set(data, forKey: Self.automationsKey)
+    }
+
+    func pushAutomations() {
+        pushToWeb?(["action": "automations", "payload": ["tasks": automations]])
+    }
+
+    /// Saves one task. The id is generated here, not trusted from the page.
+    func upsertAutomation(_ task: [String: Any]) {
+        var entry = task
+        let id = (task["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString
+        entry["id"] = id
+        entry["status"] = entry["status"] as? String ?? "active"
+        if let index = automations.firstIndex(where: { $0["id"] as? String == id }) {
+            automations[index] = entry
+        } else {
+            automations.insert(entry, at: 0)
+        }
+        persistAutomations()
+        pushAutomations()
+    }
+
+    func removeAutomation(id: String) {
+        automations.removeAll { $0["id"] as? String == id }
+        persistAutomations()
+        pushAutomations()
+    }
+
+    func setAutomationStatus(id: String, status: String) {
+        guard let index = automations.firstIndex(where: { $0["id"] as? String == id }) else { return }
+        automations[index]["status"] = status
+        persistAutomations()
+        pushAutomations()
+    }
+
     /// Snapshot handed to the web view. Must stay JSON-serialisable.
     func transcriptForUI() -> [[String: Any]] { transcript }
 
@@ -157,10 +224,15 @@ final class VMModel: ObservableObject {
             pushConfiguration()
             try host.start(configuration: prepared.configuration, profile: prepared.profile)
             isRunning = true
+            codexReady = false
+            bootDetail = provisioner.isProvisioned ? "正在启动 QEMU" : ""
             status = "running"
             appendStatus("虚拟机已启动")
+            startProbeLoop()
         } catch {
             isRunning = false
+            codexReady = false
+            bootDetail = ""
             status = "failed"
             append(diagnostic: "\(error)")
             appendStatus("启动失败：\(error)")
@@ -171,7 +243,12 @@ final class VMModel: ObservableObject {
     func stop() {
         host.stop()
         isRunning = false
+        codexReady = false
+        bootDetail = ""
+        probeTask?.cancel()
+        probeTask = nil
         status = "stopped"
+        pushProvisionState()
     }
 
     func restart() {
@@ -217,9 +294,73 @@ final class VMModel: ObservableObject {
             let line = ConsoleText.plain(String(decoding: lineData, as: UTF8.self))
             provisioner.ingest(consoleLine: line)
             auth.ingest(line: line)
+            noteBoot(line: line)
         }
         // A guest that never emits a newline must not grow this without bound.
         if consoleBuffer.count > 256 * 1024 { consoleBuffer.removeAll() }
+    }
+
+    // MARK: - Boot
+
+    /// The one line the host types into the guest to find out whether the
+    /// machine can be used yet.
+    ///
+    /// There is no channel inside the guest to announce that its shell is up,
+    /// so the host asks: while the guest is still booting the text lands
+    /// nowhere, and once something is reading the console it answers. The guest
+    /// also carries a service that prints the same marker on later boots, so
+    /// this is the fallback rather than the only path.
+    private static let probeCommand =
+        "if command -v codex >/dev/null 2>&1; then echo POCKETVM_CODEX_READY; else echo POCKETVM_NO_CODEX; fi"
+
+    /// Follows the guest's own console so the gate can say where the machine is.
+    private func noteBoot(line: String) {
+        guard isRunning else { return }
+        if line.contains("POCKETVM_CODEX_READY") {
+            markCodexReady()
+            return
+        }
+        guard provisioner.isProvisioned, !codexReady, bootDetail != "正在启动 Codex CLI" else { return }
+        // The distribution's banner and the shell prompt are both output from
+        // something that can read what is typed back.
+        if line.contains("Debian GNU/Linux") || line.contains("@pocketvm:") {
+            sendProbe()
+        } else if bootDetail.isEmpty {
+            bootDetail = "正在引导系统"
+            pushProvisionState()
+        }
+    }
+
+    private func sendProbe() {
+        bootDetail = "正在启动 Codex CLI"
+        pushProvisionState()
+        host.writeToConsole(Self.probeCommand + "\n")
+    }
+
+    private func markCodexReady() {
+        guard !codexReady else { return }
+        codexReady = true
+        bootDetail = ""
+        probeTask?.cancel()
+        probeTask = nil
+        pushProvisionState()
+    }
+
+    /// A slow machine can take minutes to reach a prompt, and the firmware's
+    /// own menu reads the serial line, so nothing is typed at it before the
+    /// guest has had time to get past it. The banner or the prompt sends the
+    /// probe immediately; this only covers output this device has never shown.
+    private func startProbeLoop() {
+        probeTask?.cancel()
+        probeTask = Task { [weak self] in
+            var attempts = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(for: attempts < 3 ? .seconds(150) : .seconds(60))
+                guard let self, self.isRunning, !self.codexReady else { return }
+                attempts += 1
+                self.sendProbe()
+            }
+        }
     }
 
     private func append(console text: String) {
@@ -247,8 +388,13 @@ final class VMModel: ObservableObject {
             "provisioned": provisioner.isProvisioned,
             "image": provisioner.image.displayName,
             "imageBytes": Int(provisioner.image.capacityGiB),
+            "host": provisioner.image.remoteURL.host ?? "",
             "password": provisioner.state.password,
             "running": isRunning,
+            "codexReady": codexReady,
+            "detail": bootDetail,
+            "cpuCount": configuration?.cpuCount ?? 0,
+            "memoryMiB": configuration?.memoryMiB ?? 0,
             "status": status,
         ]
         switch stage {
