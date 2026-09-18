@@ -280,8 +280,6 @@ struct WebUIView: UIViewRepresentable {
                         + "\(payload?["cols"] ?? "?")x\(payload?["rows"] ?? "?")"
                         + " pending \(payload?["pending"] ?? "-")"
                 )
-                reply(["action": "terminalState",
-                       "payload": ["text": model.isRunning ? "已连接" : "虚拟机未运行"]])
 
             case "terminalClosed":
                 break

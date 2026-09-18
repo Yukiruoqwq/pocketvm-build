@@ -90,6 +90,17 @@ final class VMModel: ObservableObject {
     @Published var wantsDiskPicker = false
 
     init() {
+        // The SwiftUI console sheet and the xterm terminal share one serial
+        // stream. This callback is what fills the sheet's plain-text view; the
+        // byte callback below feeds xterm. Without this, the sheet was wired to
+        // a published string that nothing ever wrote, so it stayed on its
+        // placeholder even while the guest was printing on the same console.
+        host.onConsoleOutput = { [weak self] text in
+            Task { @MainActor in
+                guard let self else { return }
+                self.append(console: ConsoleText.plain(text))
+            }
+        }
         host.onConsoleBytes = { [weak self] data in
             let encoded = data.base64EncodedString()
             Task { @MainActor in
