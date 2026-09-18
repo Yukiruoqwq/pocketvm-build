@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 @MainActor
 final class CodexAuth: ObservableObject {
@@ -10,11 +11,16 @@ final class CodexAuth: ObservableObject {
     let log: [String] = []
     let trace: [String] = []
     private var loginID: String?
+    private(set) var signInRevision = 0
     func reset() { loginID = nil; state = .unknown }
     func fail(_ reason: String) { state = .failed(reason) }
-    func starting() { state = .starting }
+    func starting() { loginID = nil; state = .starting }
     func account(_ result: [String: Any]) {
-        if let account = result["account"] as? [String: Any], account["type"] != nil { state = .signedIn }
+        if state.isWaiting { return }
+        if let account = result["account"] as? [String: Any], account["type"] != nil {
+            if state != .signedIn { signInRevision += 1 }
+            state = .signedIn
+        }
         else if !state.isWaiting { state = .signedOut }
     }
     func login(_ result: [String: Any]) {
@@ -27,7 +33,7 @@ final class CodexAuth: ObservableObject {
     func completed(_ params: [String: Any]) {
         guard let id = params["loginId"] as? String, id == loginID else { return }
         loginID = nil
-        if params["success"] as? Bool == true { state = .signedIn }
+        if params["success"] as? Bool == true { signInRevision += 1; state = .signedIn }
         else { fail(params["error"] as? String ?? "登录未完成") }
     }
 }

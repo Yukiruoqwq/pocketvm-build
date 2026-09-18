@@ -76,7 +76,8 @@
 
     <div class="composer">
       <div class="composer-column">
-        <textarea id="composerInput" rows="1" placeholder="使用 Codex"></textarea>
+        <div id="attachmentList" class="attachment-list"></div>
+          <textarea id="composerInput" rows="1" placeholder="使用 Codex"></textarea>
         <div class="composer-bar">
           <button class="icon-btn" type="button" id="contextButton" title="添加文件等内容" aria-haspopup="menu" aria-expanded="false">
             <svg viewBox="0 0 16 16"><path d="M8 3.4v9.2M3.4 8h9.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -175,12 +176,12 @@
     </button>
   </div>
 
+  <div id="replyState" role="status" hidden>正在回复…</div>
   <div class="model-menu" id="modelMenu" hidden>
-    <p class="model-menu-title">推理</p>
-    <p class="model-menu-section">模型</p>
+    <p class="model-menu-title">模型</p>
     <ul class="model-menu-list" id="modelList"></ul>
     <p class="model-menu-section">推理强度</p>
-    <ul class="model-menu-list" id="effortList"></ul>
+    <select class="effort-select" id="effortList" aria-label="推理强度"></select>
     <label class="speed-row" id="speedRow" hidden>
       <span class="speed-text">
         <span class="speed-title">快速</span>

@@ -29,6 +29,12 @@ fetch() {
 fetch pocketvm-relay.mjs "$LIB/pocketvm-relay.mjs" || exit 1
 fetch pocketvm-report.sh /usr/local/sbin/pocketvm-report || exit 1
 chmod 0755 /usr/local/sbin/pocketvm-report
+fetch pocketvm-provision.sh /usr/local/sbin/pocketvm-provision.sh || exit 1
+for helper in pocketvm-repair.sh pocketvm-shared-setup.sh pocketvm-share.py; do
+  fetch "$helper" "$LIB/$helper" || exit 1
+done
+chmod 0755 /usr/local/sbin/pocketvm-provision.sh
+
 cat >"$LIB/run-relay.sh" <<'EOF'
 #!/bin/bash
 if [ -r /etc/profile.d/pocketvm-proxy.sh ]; then . /etc/profile.d/pocketvm-proxy.sh; fi
@@ -83,7 +89,7 @@ Description=Resume incomplete PocketVM installation
 After=cloud-final.service network-online.target
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'test -f /var/lib/pocketvm/install-complete && timeout 30 codex --version >/dev/null 2>&1 && command -v node >/dev/null || /usr/local/sbin/pocketvm-provision.sh'
+ExecStart=/bin/bash /usr/local/lib/pocketvm/pocketvm-repair.sh
 TimeoutStartSec=1800
 EOF
   systemctl daemon-reload

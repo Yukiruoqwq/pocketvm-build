@@ -50,7 +50,9 @@ final class VMModel: ObservableObject {
     @Published private(set) var models: [[String: Any]] = []
     private var modelsError: String?
     /// One refresh per sign-in, not one per state push.
-    private var refreshedAfterSignIn = false
+    private var refreshedSignInRevision = -1
+    private var modelsLoading = false
+    private var modelRequestID = UUID()
     /// The account's usage limits, exactly as the guest's own app server
     /// reported them. Nil until it has, and cached afterwards so the numbers
     /// survive a relaunch.
@@ -79,6 +81,34 @@ final class VMModel: ObservableObject {
     private var stopping = false
     private var starting = false
     @Published private(set) var executionMode: ExecutionMode?
+    @Published var importPicker: ImportKind?
+    private var importedAttachments: [String: (path: String, image: Bool)] = [:]
+    private func registerImport(_ url: URL, image: Bool) {
+        let id = UUID().uuidString
+        let path = "/home/codex/Shared/" + url.lastPathComponent
+        importedAttachments[id] = (path, image)
+        pushToWeb?(["action": "attachment", "payload": ["id": id, "name": url.lastPathComponent]])
+    }
+    func importFile(_ source: URL) {
+        let scoped = source.startAccessingSecurityScopedResource()
+        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+        do {
+            let values = try source.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            guard values.isRegularFile == true else { conversationNotice("请选择文件"); return }
+            let root = try SharedDirectory().root
+            let name = UUID().uuidString.prefix(8) + "-" + source.lastPathComponent
+            let destination = root.appendingPathComponent(String(name))
+            try FileManager.default.copyItem(at: source, to: destination)
+            registerImport(destination, image: ["png", "jpg", "jpeg", "webp"].contains(destination.pathExtension.lowercased()))
+        } catch { conversationNotice("文件导入失败：\(error.localizedDescription)") }
+    }
+    func importPhoto(_ data: Data) {
+        do {
+            let url = try SharedDirectory().root.appendingPathComponent("Photo-" + UUID().uuidString + ".jpg")
+            try data.write(to: url, options: .atomic); registerImport(url, image: true)
+        } catch { conversationNotice("照片导入失败：\(error.localizedDescription)") }
+    }
+
     private var promptInFlight = false
     private var selectedThreadID: String?
     /// Set once the guest's own OS has been heard from, which is what makes
@@ -147,6 +177,7 @@ final class VMModel: ObservableObject {
         provisioner.channel.onState = { [weak self] ready, error in
             guard let self else { return }
             if ready { self.markCodexReady() } else {
+                if self.promptInFlight { self.conversationError("连接已断开，未自动重发消息") }
                 self.codexReady = false; self.auth.reset(); self.promptInFlight = false
                 self.bootDetail = error ?? "正在连接 Codex 服务"
                 self.pushProvisionState()
@@ -389,7 +420,7 @@ final class VMModel: ObservableObject {
         provisioner.channel.request(method, params) { [weak self] message in
             if let error = message["error"] as? [String: Any] {
                 self?.appendStatus(error["message"] as? String ?? "协议请求失败")
-                if ["turn/start", "thread/start", "thread/resume"].contains(method) { self?.promptInFlight = false }
+                if ["turn/start", "thread/start", "thread/resume"].contains(method) { self?.conversationError(error["message"] as? String ?? "请求失败") }
                 if method == "account/login/start" { self?.auth.fail(error["message"] as? String ?? "登录失败") }
                 return
             }
@@ -397,24 +428,49 @@ final class VMModel: ObservableObject {
             done(result)
         }
     }
-    func handlePrompt(_ text: String) {
+    func conversationNotice(_ text: String) {
+        if transcript.last?["role"] as? String != "error" || transcript.last?["text"] as? String != text {
+            transcript.append(["role": "error", "text": text]); pushMessages()
+        }
+    }
+    private func finishPrompt() {
+        promptInFlight = false
+        pushToWeb?(["action": "promptState", "payload": ["busy": false]])
+    }
+    private func conversationError(_ text: String) { finishPrompt(); conversationNotice(text) }
+
+    func handlePrompt(_ text: String, attachmentIDs: [String] = []) {
         let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000))
-        guard !text.isEmpty, isRunning, codexReady, !promptInFlight else { return }
+        let attachments = attachmentIDs.compactMap { importedAttachments[$0] }
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        guard isRunning, codexReady else { conversationError("Codex 未连接，消息未发送"); return }
+        guard !promptInFlight else { conversationNotice("上一条消息仍在处理中"); return }
         promptInFlight = true
-        transcript.append(["role": "user", "text": text]); pushMessages()
+        pushToWeb?(["action": "promptState", "payload": ["busy": true]])
+        transcript.append(["role": "user", "text": ([text] + attachments.map { $0.path }).joined(separator: "\n")]); pushMessages()
+        pushToWeb?(["action": "promptAccepted", "payload": [:]])
         let send: (String) -> Void = { [weak self] id in
             guard let self else { return }
             let selection = self.storedModelSelection()
-            var params: [String: Any] = ["threadId": id, "input": [["type": "text", "text": text, "text_elements": []]]]
+            var input: [[String: Any]] = [["type": "text", "text": text.isEmpty ? "请查看附件" : text, "text_elements": []]]
+            for attachment in attachments {
+                if attachment.image { input.append(["type": "localImage", "path": attachment.path]) }
+                else { input.append(["type": "text", "text": "Attached file: " + attachment.path, "text_elements": []]) }
+            }
+            var params: [String: Any] = ["threadId": id, "input": input]
             if let model = selection.model { params["model"] = model }
             if let effort = selection.effort { params["effort"] = effort }
             if selection.fast { params["serviceTier"] = "fast" }
-            self.rpc("turn/start", params) { _ in }
+            self.rpc("turn/start", params) { [weak self] result in
+                if let turn = result["turn"] as? [String: Any], turn["status"] as? String == "failed" {
+                    self?.conversationError((turn["error"] as? [String: Any])?["message"] as? String ?? "回合失败")
+                }
+            }
         }
         if let id = selectedThreadID { rpc("thread/resume", ["threadId": id]) { _ in send(id) } }
         else {
             rpc("thread/start", ["cwd": "/home/codex", "approvalPolicy": "on-request", "sandbox": "workspace-write"]) { [weak self] result in
-                guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { self?.promptInFlight = false; return }
+                guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { self?.conversationError("服务未返回对话 ID"); return }
                 self?.selectedThreadID = id; send(id)
             }
         }
@@ -440,13 +496,19 @@ final class VMModel: ObservableObject {
     }
     private func handleCodexEvent(_ message: [String: Any]) {
         guard let method = message["method"] as? String, let params = message["params"] as? [String: Any] else { return }
-        if method == "account/login/completed" { auth.completed(params); refreshCodexStatus(); requestModels(); return }
+        if method == "account/login/completed" { auth.completed(params); refreshCodexStatus(); return }
         if method == "account/updated" { refreshCodexStatus(); return }
         guard params["threadId"] as? String == selectedThreadID else { return }
+        if method == "error" {
+            let error = params["error"] as? [String: Any] ?? [:]
+            let reason = error["message"] as? String ?? "请求失败"
+            if params["willRetry"] as? Bool == true { conversationNotice(reason + "（重试中）") }
+            else { conversationError(reason) }
+        }
         if method == "turn/completed" {
-            promptInFlight = false
-            if let turn = params["turn"] as? [String: Any], let error = turn["error"] as? [String: Any] { appendStatus(error["message"] as? String ?? "回合失败") }
-            requestModels()
+            finishPrompt()
+            if let turn = params["turn"] as? [String: Any], let error = turn["error"] as? [String: Any] { conversationError(error["message"] as? String ?? "回合失败") }
+            refreshAccountLists()
         }
         if method == "item/agentMessage/delta", let id = params["itemId"] as? String, let delta = params["delta"] as? String {
             let index: Int
@@ -478,10 +540,43 @@ final class VMModel: ObservableObject {
     /// The helper is fetched from this app rather than typed out, so a guest
     /// installed by an earlier build answers the same question as a new one.
     func requestModels() {
-        guard isRunning, codexReady else { return }
-        rpc("model/list", ["includeHidden": true, "limit": 100]) { [weak self] result in
-            self?.models = result["data"] as? [[String: Any]] ?? []; self?.pushModels()
+        guard isRunning, codexReady, !modelsLoading else { return }
+        modelsLoading = true; modelsError = nil
+        let requestID = UUID(); modelRequestID = requestID
+        pushModels()
+        fetchModelsPage(cursor: nil, collected: [], cursors: [], requestID: requestID)
+    }
+
+    private func fetchModelsPage(cursor: String?, collected: [[String: Any]], cursors: Set<String>, requestID: UUID) {
+        var params: [String: Any] = ["includeHidden": true, "limit": 100]
+        if let cursor { params["cursor"] = cursor }
+        provisioner.channel.request("model/list", params) { [weak self] message in
+            guard let self, self.modelRequestID == requestID else { return }
+            guard let result = message["result"] as? [String: Any],
+                  let page = result["data"] as? [[String: Any]] else {
+                self.modelsLoading = false
+                self.modelsError = (message["error"] as? [String: Any])?["message"] as? String ?? "获取模型失败"
+                self.pushModels(); return
+            }
+            let all = collected + page
+            if let next = result["nextCursor"] as? String, !next.isEmpty {
+                guard !cursors.contains(next), cursors.count < 100 else {
+                    self.modelsLoading = false; self.modelsError = "模型分页异常"; self.pushModels(); return
+                }
+                self.fetchModelsPage(cursor: next, collected: all, cursors: cursors.union([next]), requestID: requestID)
+                return
+            }
+            var seen = Set<String>()
+            self.models = all.filter { entry in
+                guard let id = entry["id"] as? String else { return false }
+                return seen.insert(id).inserted
+            }
+            self.modelsLoading = false; self.pushModels()
         }
+    }
+
+    private func refreshAccountLists() {
+        guard isRunning, codexReady else { return }
         rpc("thread/list", ["limit": 50]) { [weak self] result in
             self?.threads = result["data"] as? [[String: Any]] ?? []; self?.pushAccount()
         }
@@ -536,7 +631,7 @@ final class VMModel: ObservableObject {
     /// One POST carries everything the guest found in a single app-server
     /// session: the models, the usage limits and the conversation list.
     func pushModels() {
-        var payload: [String: Any] = ["models": models]
+        var payload: [String: Any] = ["models": models, "loading": modelsLoading]
         if let modelsError { payload["error"] = modelsError }
         pushToWeb?(["action": "models", "payload": payload])
     }
@@ -559,7 +654,8 @@ final class VMModel: ObservableObject {
         bootDetail = bootProgress.phase.detail
         executionMode = .select(jitAvailable: JIT.isDebugged)
         pushProvisionState()
-        refreshedAfterSignIn = false
+        refreshedSignInRevision = -1
+        modelRequestID = UUID(); modelsLoading = false
         defer { starting = false; pushProvisionState() }
         auth.reset()
         diagnostics.removeAll()
@@ -643,6 +739,7 @@ final class VMModel: ObservableObject {
 
     func beginCodexLogin() {
         guard codexReady, !auth.state.isWaiting else { return }
+        modelRequestID = UUID(); modelsLoading = false
         auth.starting()
         rpc("account/login/start", ["type": "chatgptDeviceCode"]) { [weak self] result in self?.auth.login(result) }
     }
@@ -711,14 +808,7 @@ final class VMModel: ObservableObject {
         append(diagnostic: "guest app-server initialized")
         refreshCodexStatus()
         pushProvisionState()
-        // The machine is usable, so the account's model list can be asked for.
-        // It may legitimately fail until the user signs in; that answer is
-        // reported to the frontend rather than papered over with a guess.
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2))
-            guard let self, self.isRunning, self.codexReady else { return }
-            self.requestModels()
-        }
+        refreshAccountLists()
     }
 
     private func append(console text: String) {
@@ -821,9 +911,12 @@ final class VMModel: ObservableObject {
         pushToWeb?(["action": "authState", "payload": payload])
         // Signing in changes what the account has, so the models, the limits and
         // the conversation list are asked for again rather than left stale.
-        if case .signedIn = auth.state, !refreshedAfterSignIn {
-            refreshedAfterSignIn = true
+        if case .signedIn = auth.state, refreshedSignInRevision != auth.signInRevision {
+            refreshedSignInRevision = auth.signInRevision
+            modelRequestID = UUID(); modelsLoading = false
+            models = []
             requestModels()
+            refreshAccountLists()
         }
     }
 
@@ -910,6 +1003,7 @@ struct ContentView: View {
         ) { result in
             model.addDisk(from: result)
         }
+        .sheet(item: $model.importPicker) { kind in ImportPicker(kind: kind, model: model) }
         .sheet(isPresented: $showConsole) {
             ConsoleSheet(model: model, showDiagnostics: $showDiagnostics)
                 .safeAreaInset(edge: .bottom, alignment: .trailing) {

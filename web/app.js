@@ -1,3 +1,4 @@
+let pendingAttachments = [];
 // Frontend for PocketVM.
 //
 // Layout, wording and theme follow the desktop app: the strings come out of its
@@ -293,6 +294,7 @@ function renderMessages() {
       column.appendChild(row);
       continue;
     }
+    if (message.role === "error") { column.appendChild(el("div", "conversation-error", message.text)); continue; }
     if (message.role === "status") {
       column.appendChild(el("div", "meta-row", message.text));
       continue;
@@ -360,9 +362,9 @@ function renderModelChip() {
   const model = selectedModel();
   // Before the account's models have arrived there is nothing to choose, so the
   // control is not offered at all rather than offering a guess.
-  $("modelChip").hidden = !availableModels().length;
-  $("modelName").textContent = model ? model.displayName ?? model.id : "Codex";
-  $("modelEffort").textContent = effortLabel(state.model.effort);
+  $("modelChip").hidden = false;
+  $("modelName").textContent = model ? model.displayName ?? model.id : (state.model.loading ? "获取模型…" : "选择模型");
+  $("modelEffort").textContent = model ? effortLabel(state.model.effort) : "";
 }
 
 function sendModelSelection() {
@@ -392,7 +394,9 @@ function renderModelMenu() {
     row.setAttribute("aria-selected", current ? "true" : "false");
     const text = el("span", "model-row-text");
     text.appendChild(el("span", "model-row-title", entry.displayName ?? entry.id));
-    if (entry.description) text.appendChild(el("span", "model-row-desc", entry.description));
+    row.title = entry.description ?? "";
+    row.tabIndex = 0; row.setAttribute("role", "option");
+    row.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); chooseModel(entry.id); } });
     row.appendChild(text);
     if (current) row.appendChild(el("span", "menu-desc", "✓"));
     row.addEventListener("click", () => chooseModel(entry.id));
@@ -401,22 +405,12 @@ function renderModelMenu() {
 
   const efforts = $("effortList");
   efforts.innerHTML = "";
-  const supported = supportedEfforts(model);
-  if (!supported.length) {
-    efforts.appendChild(el("li", "model-menu-empty", "未登录"));
+  for (const effort of supportedEfforts(model)) {
+    const option = el("option", null, effortLabel(effort));
+    option.value = effort; option.selected = effort === state.model.effort;
+    efforts.appendChild(option);
   }
-  for (const effort of supported) {
-    const row = el("li", null, effortLabel(effort));
-    row.setAttribute("aria-selected", effort === state.model.effort ? "true" : "false");
-    if (effort === state.model.effort) row.appendChild(el("span", "menu-desc", "✓"));
-    row.addEventListener("click", () => {
-      state.model.effort = effort;
-      sendModelSelection();
-      renderModelChip();
-      renderModelMenu();
-    });
-    efforts.appendChild(row);
-  }
+  efforts.disabled = !efforts.options.length;
 
   // 速度 — 标准 / 快速 (1.5 倍速), the account's own service tier.
   const speedRow = $("speedRow");
@@ -443,16 +437,17 @@ function chooseModel(id) {
 function applyModels(payload) {
   state.model.models = payload?.models ?? [];
   state.model.error = payload?.error ?? null;
-  state.model.loading = false;
+  state.model.loading = payload?.loading === true;
+  if (state.model.id && !availableModels().some(entry => entry.id === state.model.id)) state.model.id = null;
   const model = selectedModel();
-  if (model && !state.model.id) {
+  if (model) {
     const supported = supportedEfforts(model);
     state.model.effort = supported.includes(state.model.effort)
       ? state.model.effort
       : model.defaultReasoningEffort ?? supported[0] ?? state.model.effort;
   }
   renderModelChip();
-  if (!$("modelMenu").hidden) renderModelMenu();
+  if (!$("modelMenu").hidden) { renderModelMenu(); positionModelMenu(); }
   if (!$("settings").hidden) renderSettings();
 }
 
@@ -461,9 +456,31 @@ function closeModelMenu() {
   $("modelChip").setAttribute("aria-expanded", "false");
 }
 
+function positionModelMenu() {
+  const menu = $("modelMenu");
+  if (menu.hidden) return;
+  const v = window.visualViewport;
+  const left = v?.offsetLeft ?? 0, top = v?.offsetTop ?? 0;
+  const width = v?.width ?? innerWidth, height = v?.height ?? innerHeight;
+  const box = $("modelChip").getBoundingClientRect();
+  const above = Math.max(0, Math.min(box.top, top + height) - top - 20);
+  const below = Math.max(0, top + height - Math.max(box.bottom, top) - 20);
+  const useAbove = above >= Math.min(260, height * .6) || above >= below;
+  menu.style.width = `${Math.min(280, width - 24)}px`;
+  menu.style.maxHeight = `${Math.max(0, useAbove ? above : below)}px`;
+  menu.style.right = "auto"; menu.style.bottom = "auto";
+  menu.style.left = `${Math.max(left + 12, Math.min(box.right - Math.min(280, width - 24), left + width - Math.min(280, width - 24) - 12))}px`;
+  menu.style.top = `${useAbove ? Math.min(box.top - 8, top + height - 12) - menu.offsetHeight : Math.max(top + 12, box.bottom + 8)}px`;
+}
+
 function wireModelMenu() {
   const menu = $("modelMenu");
   const chip = $("modelChip");
+  $("effortList").addEventListener("change", event => { state.model.effort = event.target.value; sendModelSelection(); renderModelChip(); });
+  window.addEventListener("resize", positionModelMenu);
+  window.visualViewport?.addEventListener("resize", positionModelMenu);
+  window.visualViewport?.addEventListener("scroll", positionModelMenu);
+  document.addEventListener("keydown", event => { if (event.key === "Escape") closeModelMenu(); });
   $("speedToggle").addEventListener("change", (event) => {
     state.model.speed = event.target.checked ? "fast" : "standard";
     sendModelSelection();
@@ -474,17 +491,9 @@ function wireModelMenu() {
     menu.hidden = !open;
     chip.setAttribute("aria-expanded", open ? "true" : "false");
     if (!open) return;
-    // Asking each time is cheap, and it is what makes the menu follow an
-    // account that changed: signed in, signed out or a different plan.
-    state.model.loading = !availableModels().length;
-    bridge.send("getModels");
+    if (!availableModels().length && !state.model.loading) bridge.send("getModels");
     renderModelMenu();
-    // Sit above the composer pill, right-aligned with it.
-    const box = chip.getBoundingClientRect();
-    menu.style.left = "auto";
-    menu.style.right = `${Math.max(12, window.innerWidth - box.right)}px`;
-    menu.style.top = "auto";
-    menu.style.bottom = `${window.innerHeight - box.top + 8}px`;
+    positionModelMenu();
   });
   document.addEventListener("click", (event) => {
     if (menu.hidden || menu.contains(event.target)) return;
@@ -1125,6 +1134,7 @@ function applyProvisionState(payload) {
   renderPlan();
   renderAccount();
   renderGate();
+  renderModelChip();
   if (!$("settings").hidden) renderSettings();
 }
 
@@ -1136,6 +1146,7 @@ function applyAuthState(payload) {
 
 window.pocketvmReceive = function (message) {
   if (!message || typeof message !== "object") return;
+  const payload = message.payload ?? {};
   switch (message.action) {
     case "provisionState":
       applyProvisionState(message.payload || {});
@@ -1148,6 +1159,15 @@ window.pocketvmReceive = function (message) {
       if (message.payload?.version) state.version = message.payload.version;
       applyAppearance();
       if (!$("settings").hidden) renderSettings();
+      break;
+    case "attachment":
+      pendingAttachments.push(payload); renderAttachments(); break;
+    case "promptAccepted":
+      pendingAttachments = []; renderAttachments();
+      $("composerInput").value = ""; break;
+    case "promptState":
+      $("composerInput").setAttribute("aria-busy", payload.busy ? "true" : "false");
+      document.getElementById("replyState").hidden = !payload.busy;
       break;
     case "models":
       applyModels(message.payload || {});
@@ -1188,6 +1208,16 @@ window.pocketvmReceive = function (message) {
   }
 };
 
+function renderAttachments() {
+  const row = $("attachmentList"); row.replaceChildren();
+  for (const item of pendingAttachments) {
+    const button = el("button", "attachment-chip", item.name + " ×");
+    button.type = "button"; button.setAttribute("aria-label", "移除 " + item.name);
+    button.addEventListener("click", () => { pendingAttachments = pendingAttachments.filter(entry => entry.id !== item.id); renderAttachments(); });
+    row.appendChild(button);
+  }
+}
+
 function wireComposer() {
   const input = $("composerInput");
   const send = $("sendBtn");
@@ -1207,11 +1237,8 @@ function wireComposer() {
 
   function submit() {
     const text = input.value.trim();
-    if (!text) return;
-    appendMessage({ role: "user", text });
-    input.value = "";
-    autosize();
-    bridge.send("prompt", { text });
+    if (!text && !pendingAttachments.length) return;
+    bridge.send("prompt", { text, attachments: pendingAttachments.map(item => item.id) });
   }
 }
 

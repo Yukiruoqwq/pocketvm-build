@@ -61,6 +61,8 @@ final class SeedServer {
     private static let uploadLimit = 96 * 1024 * 1024
     private static let reportLimit = 4 * 1024 * 1024
 
+    var sharedDirectory: SharedDirectory?
+
     init(preferredPort: UInt16 = 0) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
@@ -218,6 +220,12 @@ final class SeedServer {
             return
         }
 
+        if method == "POST", path == "/shared" {
+            guard body.count <= 400_000, let reply = sharedDirectory?.exchange(body) else {
+                send(connection, status: "400 Bad Request", contentType: "application/json", body: Data("{}".utf8)); return
+            }
+            send(connection, status: "200 OK", contentType: "application/json", body: reply); return
+        }
         if method == "POST", path == "/rpc" {
             guard body.count <= Self.reportLimit,
                   let reply = DispatchQueue.main.sync(execute: { self.onExchange?(body) }) else {

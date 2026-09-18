@@ -438,7 +438,7 @@ final class Provisioner: ObservableObject {
         var resources: [String: SeedServer.Resource] = [:]
         for name in [
             "pocketvm-relay.mjs", "pocketvm-report.sh", "pocketvm-boot.sh",
-            "setup-proxy.sh",
+            "setup-proxy.sh", "pocketvm-share.py", "pocketvm-shared-setup.sh", "pocketvm-repair.sh",
         ] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
@@ -446,6 +446,8 @@ final class Provisioner: ObservableObject {
             }
             resources["/\(name)"] = .text(text)
         }
+        resources["/pocketvm-provision.sh"] = .text(provisionScript())
+        resources["/installation.json"] = .text(state.completed ? "{\"completed\":true}" : "{\"completed\":false}")
         let vmConfig = try VMConfiguration.loadOrCreateDefault().validated()
         resources["/developer.json"] = .text(vmConfig.developerSSH == true ? "{\"ssh\":true}" : "{\"ssh\":false}")
         // The proxy is the owner's own subscription, so it lives in
@@ -477,6 +479,7 @@ final class Provisioner: ObservableObject {
 
         // Installed guests persist this endpoint. Fail explicitly if unavailable.
         let server = try SeedServer(preferredPort: Self.helperPort)
+        server.sharedDirectory = try SharedDirectory()
         configure(server)
         try server.start(resources: resources)
         return server

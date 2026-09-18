@@ -886,3 +886,14 @@ body.entered .app { animation: vm-settle .45s ease; }
 .slow-mode-badge { position:fixed; right:max(12px, env(safe-area-inset-right)); bottom:max(8px, env(safe-area-inset-bottom)); z-index:10000; color:#d5a000; font-size:12px; pointer-events:none; padding:3px 6px; background:var(--bg-app); border-radius:4px; }
 .slow-mode-badge[hidden] { display:none; }
 
+
+.effort-select { width: calc(100% - 16px); margin: 0 8px 8px; padding: 8px; color: var(--fg); background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px; }
+.model-menu { overscroll-behavior: contain; box-sizing: border-box; }
+.model-menu-list li:focus-visible { outline: 2px solid var(--fg-faint); outline-offset: -2px; }
+
+.conversation-error { color: #e6a54c; white-space: pre-wrap; padding: 12px 0; }
+#replyState { position: fixed; bottom: 110px; left: 50%; color: var(--fg-faint); font-size: 12px; pointer-events: none; }
+
+.attachment-list { display: flex; gap: 6px; flex-wrap: wrap; max-height: 100px; overflow: auto; }
+.attachment-list:empty { display: none; }
+.attachment-chip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--fg); background: var(--bg-raised); }

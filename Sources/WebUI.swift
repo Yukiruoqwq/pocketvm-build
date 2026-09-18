@@ -248,7 +248,7 @@ struct WebUIView: UIViewRepresentable {
 
             case "prompt":
                 if let text = payload?["text"] as? String {
-                    model.handlePrompt(text)
+                    model.handlePrompt(text, attachmentIDs: payload?["attachments"] as? [String] ?? [])
                 }
 
             case "getAutomations":
@@ -291,8 +291,9 @@ struct WebUIView: UIViewRepresentable {
                 }
                 UserDefaults.standard.set(selection, forKey: "pocketvm.model")
 
-            case "pickFiles", "pickPhotos", "pickRemoteFile":
-                model.appendStatus("此构建还没有接入系统选择器。")
+            case "pickFiles": model.importPicker = .files
+            case "pickPhotos": model.importPicker = .photos
+            case "pickRemoteFile": model.conversationNotice("请将文件下载到“文件”后添加")
 
             case "terminalInput":
                 // The frontend sends base64 bytes; hand the guest exactly those.
