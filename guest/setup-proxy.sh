@@ -26,40 +26,54 @@ say() {
 VERSION="${MIHOMO_VERSION:-v1.19.31}"
 say "下载代理内核 $VERSION"
 asset="https://github.com/MetaCubeX/mihomo/releases/download/$VERSION/mihomo-linux-arm64-$VERSION.gz"
-if ! curl -fsSL --retry 2 --max-time 300 "$asset" | gzip -dc >/usr/local/bin/mihomo; then
-  say "下载代理内核失败：客户机连不上 GitHub，或者这个版本号已经下架"
-  exit 1
+if [ -x /usr/local/bin/mihomo ]; then
+  say "内核已存在，跳过下载"
+else
+  if ! curl -fsSL --retry 2 --max-time 300 "$asset" | gzip -dc >/usr/local/bin/mihomo; then
+    say "下载代理内核失败：客户机连不上 GitHub，或者这个版本号已经下架"
+    exit 1
+  fi
+  chmod 0755 /usr/local/bin/mihomo
 fi
-chmod 0755 /usr/local/bin/mihomo
 say "内核 $(/usr/local/bin/mihomo -v 2>/dev/null | head -n1)"
 
-say "拉取订阅"
 install -d /etc/mihomo
-rm -f /etc/mihomo/config.yaml
-# Panels serve the Clash config only to a client they recognise, and some answer
-# a bare curl with an empty 304. Send the user agent mihomo itself would send.
-curl -fsSL --max-time 120 -A "mihomo" -H 'Cache-Control: no-cache' \
-  "$SUB_URL" -o /etc/mihomo/config.yaml 2>/dev/null || true
-if [ ! -s /etc/mihomo/config.yaml ]; then
-  say "订阅没有返回内容：链接可能已失效，或者面板只对特定客户端返回"
-  exit 1
-fi
-if ! grep -qE '^(proxies|proxy-providers):' /etc/mihomo/config.yaml; then
-  say "订阅内容不像 Clash 配置，确认链接是 clashmeta/clash 格式"
-  exit 1
+# The subscription is fetched exactly once and then kept. Some panels issue a
+# link that is good for a single request, and re-fetching to "fix" a running
+# proxy would spend it for nothing.
+if [ -s /etc/mihomo/config.yaml ]; then
+  say "已有订阅文件，跳过拉取"
+else
+  say "拉取订阅"
+  # Panels serve the Clash config only to a client they recognise, and some
+  # answer a bare curl with an empty 304. Send the user agent mihomo would send.
+  curl -fsSL --max-time 120 -A "mihomo" -H 'Cache-Control: no-cache' \
+    "$SUB_URL" -o /etc/mihomo/config.yaml 2>/dev/null || true
+  if [ ! -s /etc/mihomo/config.yaml ]; then
+    rm -f /etc/mihomo/config.yaml
+    say "订阅没有返回内容：链接可能已失效或只能用一次，或者面板只对特定客户端返回"
+    exit 1
+  fi
+  if ! grep -qE '^(proxies|proxy-providers):' /etc/mihomo/config.yaml; then
+    say "订阅内容不像 Clash 配置，确认链接是 clashmeta/clash 格式"
+    exit 1
+  fi
 fi
 
 # The subscription owns the proxy list; the listening ports and the controller
 # are ours, and appending them last wins over anything the subscription set.
-sed -i '/^mixed-port:/d;/^socks-port:/d;/^port:/d;/^allow-lan:/d;/^external-controller:/d;/^log-level:/d' \
-  /etc/mihomo/config.yaml
-cat >>/etc/mihomo/config.yaml <<EOF
+if ! grep -q '^# pocketvm-port' /etc/mihomo/config.yaml; then
+  sed -i '/^mixed-port:/d;/^socks-port:/d;/^port:/d;/^allow-lan:/d;/^external-controller:/d;/^log-level:/d' \
+    /etc/mihomo/config.yaml
+  cat >>/etc/mihomo/config.yaml <<EOF
 
+# pocketvm-port
 mixed-port: $PORT
 allow-lan: false
 external-controller: 127.0.0.1:9090
 log-level: warning
 EOF
+fi
 
 say "注册服务"
 cat >/etc/systemd/system/mihomo.service <<'EOF'

@@ -171,7 +171,21 @@ struct WebUIView: UIViewRepresentable {
                 reply(["action": "messages", "payload": model.transcriptForUI()])
 
             case "getAppearance":
-                reply(["action": "appearance", "payload": ["theme": Self.storedAppearance]])
+                reply(["action": "appearance", "payload": [
+                    "theme": Self.storedAppearance,
+                    "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
+                ]])
+
+            case "getProxy":
+                reply(["action": "proxy", "payload": ["url": model.proxySubscription()]])
+
+            case "setProxy":
+                // Validated rather than trusted: what is stored ends up inside a
+                // command the guest runs.
+                if let url = payload?["url"] as? String {
+                    model.setProxySubscription(url)
+                    reply(["action": "proxy", "payload": ["url": model.proxySubscription()]])
+                }
 
             case "getModels":
                 // The list lives in the guest's account, so this is a request to

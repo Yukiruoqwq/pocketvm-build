@@ -122,6 +122,8 @@ const state = {
   // The account behind the CLI inside the guest: its address and plan, as the
   // guest's own app server reported them.
   account: null,
+  /// The build this page is running inside, as the host reported it.
+  version: "",
   // 剩余额度 — whatever the guest's Codex account reported. Null means it has
   // not said anything yet, which is not the same as "no limits left".
   limits: SHOW_DEMO
@@ -809,7 +811,11 @@ function rowsFor(page) {
   }
   return [
     { group: "关于" },
-    { label: "PocketVM", desc: "在 iPad 上运行一台 QEMU 虚拟机", control: () => el("span", "value", "0.2") },
+    {
+      label: "PocketVM",
+      desc: "在 iPad 上运行一台 QEMU 虚拟机",
+      control: () => el("span", "value", state.version || ""),
+    },
     { label: "模拟器", desc: "utmapp/qemu 10.0.12", control: () => el("span", "value", "GPL-2.0") },
     { label: "本应用", control: () => el("span", "value", "GPL-3.0") },
     { label: "系统镜像", desc: "cloud.debian.org · genericcloud aarch64", control: () => el("span", "value", "Debian") },
@@ -1105,6 +1111,7 @@ window.pocketvmReceive = function (message) {
       break;
     case "appearance":
       state.appearance = message.payload?.theme || "system";
+      if (message.payload?.version) state.version = message.payload.version;
       applyAppearance();
       if (!$("settings").hidden) renderSettings();
       break;

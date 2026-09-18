@@ -634,6 +634,42 @@ final class VMModel: ObservableObject {
         }
     }
 
+    // MARK: - Proxy subscription
+
+    /// The Clash subscription the guest should reach OpenAI through, if the
+    /// owner has given one.
+    ///
+    /// It is a credential, so it is kept in the app's Documents on the device:
+    /// the build is public, the subscription is not.
+    func proxySubscription() -> String {
+        let file = VMConfiguration.documentsDirectory.appendingPathComponent("proxy.txt")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return "" }
+        return text
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("http") } ?? ""
+    }
+
+    func setProxySubscription(_ url: String) {
+        let file = VMConfiguration.documentsDirectory.appendingPathComponent("proxy.txt")
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            try? FileManager.default.removeItem(at: file)
+            appendStatus("已清除代理订阅。")
+            return
+        }
+        guard trimmed.hasPrefix("http") else {
+            appendStatus("订阅链接要以 http 开头。")
+            return
+        }
+        do {
+            try (trimmed + "\n").write(to: file, atomically: true, encoding: .utf8)
+            appendStatus("已记下代理订阅，重启虚拟机后客户机会自行安装。")
+        } catch {
+            appendStatus("保存订阅失败：\(error)")
+        }
+    }
+
     // MARK: - Console
 
     /// Raw bytes from the terminal. Control characters, partial escape
