@@ -630,8 +630,9 @@ final class VMModel: ObservableObject {
         // command as soon as it appears instead of falling back to a serial
         // shell that may not exist. The serial path stays as a last resort.
         append(diagnostic: "auth: 等待客户机代理")
+        let wait = subcommand == "start" ? 20 : 5
         Task { [weak self] in
-            for _ in 0..<20 {
+            for _ in 0..<wait {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 if self.provisioner.agentIsLive {
@@ -640,11 +641,7 @@ final class VMModel: ObservableObject {
                 }
             }
             guard let self else { return }
-            guard subcommand == "start" else {
-                self.append(diagnostic: "auth: 没有代理，跳过串口状态查询")
-                return
-            }
-            self.append(diagnostic: "auth: 20 秒内没有代理，改用串口")
+            self.append(diagnostic: "auth: 没有代理，改用串口")
             self.host.writeToConsole(command + "\n")
         }
     }
