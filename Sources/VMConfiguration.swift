@@ -58,9 +58,14 @@ struct VMConfiguration: Codable, Equatable {
     var memoryMiB: Int = 4096
     /// Translation cache for the emulator. Larger avoids retranslation at the
     /// cost of resident memory.
-    var jitCacheMiB: Int = 512
-    /// Lets the translator use more than one host thread.
-    var forceMulticore: Bool = true
+    ///
+    /// 256 MiB is what UTM's own configuration for this device uses; the
+    /// translation cache is resident memory the guest cannot have, so the
+    /// default stays at the value that is known to fit.
+    var jitCacheMiB: Int = 256
+    /// Lets the translator use more than one host thread. UTM leaves this off
+    /// by default on iOS and calls it experimental there.
+    var forceMulticore: Bool = false
     var boot: Boot = Boot()
     var drives: [Drive] = []
     var network: Network = Network()

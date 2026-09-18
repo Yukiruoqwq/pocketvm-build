@@ -167,6 +167,9 @@ final class Provisioner: ObservableObject {
     func markProvisioned() {
         guard !state.completed else { return }
         state.completed = true
+        // The disk has been carrying its final size since this boot, so the
+        // resize does not need to be attempted again.
+        state.capacityApplied = true
         state.completedAt = Date()
         state.write()
         stage = .ready

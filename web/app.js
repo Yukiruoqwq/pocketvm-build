@@ -46,8 +46,8 @@ const DEFAULT_CONFIG = {
   name: "Debian",
   cpuCount: 4,
   memoryMiB: 4096,
-  jitCacheMiB: 512,
-  forceMulticore: true,
+  jitCacheMiB: 256,
+  forceMulticore: false,
   boot: { mode: "uefi" },
   drives: [
     { path: "efi_vars.fd", interface: "pflash", readOnly: false },

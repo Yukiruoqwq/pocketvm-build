@@ -323,8 +323,15 @@ final class QEMUHost {
         args += ["-smp", String(config.cpuCount)]
         args += ["-m", String(config.memoryMiB)]
 
-        var accel = "tcg,tb-size=\(config.jitCacheMiB)"
+        var accel = "tcg"
         if config.forceMulticore { accel += ",thread=multi" }
+        accel += ",tb-size=\(config.jitCacheMiB)"
+        // iOS will not give an app a single writable and executable mapping
+        // unless it holds the JIT entitlement, which no sideloaded build does.
+        // UTM's iOS argument builder passes this whenever that entitlement is
+        // missing, whether or not a debugger is attached, and every sideloaded
+        // UTM VM runs with it.
+        accel += ",split-wx=on"
         args += ["-accel", accel]
 
         // Firmware and future ACPI tables live in the bundle.

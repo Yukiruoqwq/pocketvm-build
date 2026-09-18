@@ -136,6 +136,19 @@ ones. It carries no history and only the directories the build reads, so the
 reference material this repository keeps for design comparison never lands in
 it.
 
+The mirror is disposable and has been deleted once already. To rebuild it:
+
+```powershell
+gh repo create <owner>/pocketvm-build --public
+powershell -File scripts/publish_build_repo.ps1 -Remote https://github.com/<owner>/pocketvm-build.git
+gh release create runtime-1 ..\pocketvm-runtime-ios-arm64.tar.gz --repo <owner>/pocketvm-build
+```
+
+`pocketvm-runtime-ios-arm64.tar.gz` is the aarch64 runtime this repository's own
+`scripts/slim_runtime.mjs` produced from UTM's iOS dependency build; keep a copy
+outside the repository (it is 17 MB, and the workflow's `RUNTIME_URL` expects it
+as a release asset).
+
 Locally, on a Mac with Xcode:
 
 ```sh
