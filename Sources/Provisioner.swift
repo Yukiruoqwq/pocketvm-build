@@ -675,19 +675,47 @@ final class Provisioner: ObservableObject {
         say "扩容根分区"
         grow
 
+        # The image's own unattended-upgrades runs at first boot and holds the
+        # apt lock while it fetches indexes from the same slow mirror this script
+        # is about to use. Stopping it is the difference between "updating
+        # sources" taking two minutes and taking an hour.
+        systemctl stop unattended-upgrades >/dev/null 2>&1 || true
+
+        # deb.debian.org answers slowly enough from some networks that an index
+        # fetch looks like a hang. The mirror is a file in this image, not a URL
+        # inside sources.list, so it is rewritten there — and put back if it does
+        # not answer, because a fast mirror that is unreachable is worse than a
+        # slow one.
+        MIRRORDIR=/etc/apt/mirrors
+        if [ -d "$MIRRORDIR" ] && [ ! -f "$MIRRORDIR/pocketvm-original" ]; then
+          cp "$MIRRORDIR/debian.list" "$MIRRORDIR/debian.list.pocketvm" 2>/dev/null || true
+          cp "$MIRRORDIR/debian-security.list" "$MIRRORDIR/debian-security.list.pocketvm" 2>/dev/null || true
+          printf '%s\\n' "https://mirrors.163.com/debian" >"$MIRRORDIR/debian.list"
+          printf '%s\\n' "https://mirrors.163.com/debian-security" >"$MIRRORDIR/debian-security.list"
+          touch "$MIRRORDIR/pocketvm-original"
+        fi
+
+        APT_LOCK="-o DPkg::Lock::Timeout=600"
         export DEBIAN_FRONTEND=noninteractive
         say "更新软件源"
-        apt-get update -qq >>"$LOG" 2>&1 || say "软件源更新失败，稍后可在终端重试"
+        if ! apt-get $APT_LOCK update -qq >>"$LOG" 2>&1; then
+          say "163 源不通，改回默认源重试"
+          if [ -f "$MIRRORDIR/debian.list.pocketvm" ]; then
+            cp "$MIRRORDIR/debian.list.pocketvm" "$MIRRORDIR/debian.list"
+            cp "$MIRRORDIR/debian-security.list.pocketvm" "$MIRRORDIR/debian-security.list"
+          fi
+          apt-get $APT_LOCK update -qq >>"$LOG" 2>&1 || say "软件源更新失败，稍后可在终端重试"
+        fi
 
         say "安装基础软件"
-        apt-get install -y -qq --no-install-recommends \\
+        apt-get $APT_LOCK install -y -qq --no-install-recommends \\
           curl ca-certificates git jq nodejs npm >>"$LOG" 2>&1 \\
           || say "基础软件安装失败，稍后可在终端重试"
 
         if ! command -v node >/dev/null 2>&1; then
           say "改用 NodeSource 安装 Node"
           curl -fsSL https://deb.nodesource.com/setup_22.x 2>>"$LOG" | bash - >>"$LOG" 2>&1 || true
-          apt-get install -y -qq nodejs >>"$LOG" 2>&1 || true
+          apt-get $APT_LOCK install -y -qq nodejs >>"$LOG" 2>&1 || true
         fi
         say "Node $(node --version 2>/dev/null || echo 未安装)"
 
