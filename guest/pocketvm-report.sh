@@ -43,6 +43,34 @@ upload_boot_files() {
   post bootfiles "{\"kernel\":\"$kernel\"}"
 }
 
+# Install the guest's own proxy, once, from the app.
+#
+# The subscription belongs to the person holding the tablet: it is kept in
+# Documents/proxy.txt on the device and served to the guest over the emulated
+# network, so it is never part of a build anyone can download. No URL means no
+# proxy, which is the right answer for a machine whose owner did not ask for one.
+setup_proxy() {
+  marker=/var/lib/pocketvm/proxy-ready
+  [ -f "$marker" ] && return 0
+  url="$(curl -fsS -m 20 --noproxy '*' "$BASE/proxy-url.txt" 2>/dev/null | head -n1 || true)"
+  case "$url" in
+    http*) ;;
+    *) return 0 ;;
+  esac
+  script=/tmp/pocketvm-setup-proxy.sh
+  curl -fsS -m 60 --noproxy '*' "$BASE/setup-proxy.sh" -o "$script" 2>/dev/null || return 0
+  head -n1 "$script" | grep -q '^#!' || return 0
+  bash "$script" "$url" >/tmp/pocketvm-proxy.log 2>&1
+  if [ $? -eq 0 ]; then
+    install -d "$(dirname "$marker")" 2>/dev/null || true
+    echo "$url" >"$marker"
+    post proxy '{"ok":true}'
+  else
+    # Left unmarked on purpose: the next boot tries again.
+    post proxy '{"ok":false}'
+  fi
+}
+
 install_self() {
   command -v curl >/dev/null 2>&1 || return 1
   install -d "$LIB" || return 1
@@ -85,6 +113,7 @@ report() {
       post report "$(cat /tmp/pocketvm-report.json)"
     fi
   fi
+  setup_proxy
   upload_boot_files
 }
 

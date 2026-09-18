@@ -337,12 +337,18 @@ final class Provisioner: ObservableObject {
     /// helper scripts from.
     private func startHelperServer() throws -> SeedServer {
         var resources: [String: SeedServer.Resource] = [:]
-        for name in ["pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh"] {
+        for name in ["pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh", "setup-proxy.sh"] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
                 continue
             }
             resources["/\(name)"] = .text(text)
+        }
+        // The proxy is the owner's own subscription, so it lives in
+        // Documents/proxy.txt on the device rather than in the build: this
+        // repository is public, and a subscription link is a credential.
+        if let subscription = proxySubscription() {
+            resources["/proxy-url.txt"] = .text(subscription + "\n")
         }
         // Offered on every boot, not only the first.
         //
@@ -422,6 +428,22 @@ final class Provisioner: ObservableObject {
             return nil
         }
         return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    /// The subscription URL, if one was put in Documents/proxy.txt.
+    ///
+    /// Served as a separate file rather than baked into the script, so that
+    /// what the guest runs is always the version that shipped with the app.
+    private func proxySubscription() -> String? {
+        let file = VMConfiguration.documentsDirectory.appendingPathComponent("proxy.txt")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        let line = text
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("http") }
+        guard let line, !line.isEmpty else { return nil }
+        onLog?("代理订阅已配置")
+        return line
     }
 
     private func makeBootProfile() throws -> QEMUHost.BootProfile {

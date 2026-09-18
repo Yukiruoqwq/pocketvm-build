@@ -2,14 +2,17 @@
 # Put a proxy inside the guest.
 #
 # iOS allows exactly one active VPN tunnel, and this device needs it for the
-# LocalDevVPN that JIT depends on. So the proxying has to happen one layer
-# deeper: a Clash Meta (mihomo) client inside the guest, which the Codex CLI
-# reaches through a loopback proxy. The iPad's tunnel is then never contested.
+# LocalDevVPN that JIT depends on. So the proxying happens one layer deeper: a
+# Clash Meta (mihomo) client inside the guest, which the Codex CLI reaches
+# through a loopback proxy. The iPad's own tunnel is then never contested.
 #
-# Usage (inside the guest, as any user with sudo):
 #   bash setup-proxy.sh 'https://…/clashmeta/' [port]
-
-set -euo pipefail
+#
+# The binary comes from a pinned release rather than from the releases API: the
+# API needs a JSON parser, rate-limits unauthenticated callers, and answers with
+# a different asset list every time the project publishes a build. Override with
+# MIHOMO_VERSION if that tag ever disappears.
+set -u
 
 SUB_URL="${1:?usage: setup-proxy.sh <subscription-url> [port]}"
 PORT="${2:-7890}"
@@ -20,33 +23,32 @@ say() {
   echo "$*"
 }
 
-say "下载代理内核"
-release="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
-asset="$(curl -fsSL "$release" | jq -r '.assets[].browser_download_url' \
-  | grep -E 'mihomo-linux-arm64-v[0-9.]+\.gz$' | head -n1 || true)"
-if [ -z "$asset" ]; then
-  say "没有找到 arm64 包，检查客户机能不能访问 GitHub"
+VERSION="${MIHOMO_VERSION:-v1.19.31}"
+say "下载代理内核 $VERSION"
+asset="https://github.com/MetaCubeX/mihomo/releases/download/$VERSION/mihomo-linux-arm64-$VERSION.gz"
+if ! curl -fsSL --retry 2 --max-time 300 "$asset" | gzip -dc >/usr/local/bin/mihomo; then
+  say "下载代理内核失败：客户机连不上 GitHub，或者这个版本号已经下架"
   exit 1
 fi
-curl -fsSL "$asset" | gzip -d >/usr/local/bin/mihomo
 chmod 0755 /usr/local/bin/mihomo
-say "内核 $(/usr/local/bin/mihomo -v | head -n1)"
+say "内核 $(/usr/local/bin/mihomo -v 2>/dev/null | head -n1)"
 
 say "拉取订阅"
-mkdir -p /etc/mihomo
+install -d /etc/mihomo
+rm -f /etc/mihomo/config.yaml
 # Panels serve the Clash config only to a client they recognise, and some answer
 # a bare curl with an empty 304. Send the user agent mihomo itself would send.
-curl -fsSL -A "mihomo/$( /usr/local/bin/mihomo -v | awk '{print $3}' )" \
-  -H 'Cache-Control: no-cache' "$SUB_URL" -o /etc/mihomo/config.yaml || true
+curl -fsSL --max-time 120 -A "mihomo" -H 'Cache-Control: no-cache' \
+  "$SUB_URL" -o /etc/mihomo/config.yaml 2>/dev/null || true
 if [ ! -s /etc/mihomo/config.yaml ]; then
-  say "订阅没有返回内容（面板需要对客户端返回，链接可能已失效）"
-  say "在 Clash Verge 里重新复制一次订阅链接再来一遍"
+  say "订阅没有返回内容：链接可能已失效，或者面板只对特定客户端返回"
   exit 1
 fi
 if ! grep -qE '^(proxies|proxy-providers):' /etc/mihomo/config.yaml; then
-  say "订阅内容不像 Clash 配置，检查链接是不是 clashmeta/clash 格式"
+  say "订阅内容不像 Clash 配置，确认链接是 clashmeta/clash 格式"
   exit 1
 fi
+
 # The subscription owns the proxy list; the listening ports and the controller
 # are ours, and appending them last wins over anything the subscription set.
 sed -i '/^mixed-port:/d;/^socks-port:/d;/^port:/d;/^allow-lan:/d;/^external-controller:/d;/^log-level:/d' \
@@ -74,8 +76,9 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable --now mihomo >/dev/null 2>&1
+systemctl daemon-reload >/dev/null 2>&1 || true
+systemctl enable mihomo >/dev/null 2>&1 || true
+systemctl restart mihomo >/dev/null 2>&1 || true
 
 say "等待代理可用"
 ready=0
@@ -88,7 +91,7 @@ for _ in $(seq 1 30); do
   sleep 3
 done
 if [ "$ready" != "1" ]; then
-  say "代理没起来，看 journalctl -u mihomo -n 40"
+  say "代理进程起来了但连不通，看 journalctl -u mihomo -n 40"
   exit 1
 fi
 
@@ -103,9 +106,8 @@ export NO_PROXY=localhost,127.0.0.1,10.0.2.2
 EOF
 chmod 0644 /etc/profile.d/pocketvm-proxy.sh
 
-# auth.openai.com is the host the device-code flow polls, and the one that
-# answers 403 from a blocked region. Anything else means the request reached
-# OpenAI, which is what the proxy has to achieve.
-status="$(curl -s -x "http://127.0.0.1:$PORT" -o /dev/null -w '%{http_code}' --max-time 12 https://auth.openai.com/ || true)"
-say "auth.openai.com 经代理返回 $status（403 表示仍被区域拦截，其余表示已能访问）"
-say "代理就绪，重新点『登录 Codex』即可"
+# auth.openai.com is the host the device-code flow polls. Anything that is not a
+# connection failure means the request reached OpenAI, which is the point.
+status="$(curl -s -x "http://127.0.0.1:$PORT" -o /dev/null -w '%{http_code}' --max-time 20 https://auth.openai.com/ || true)"
+say "auth.openai.com 经代理返回 ${status:-无响应}"
+say "代理就绪"

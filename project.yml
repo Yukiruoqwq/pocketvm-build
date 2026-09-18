@@ -33,8 +33,8 @@ targets:
       path: Sources/Info.plist
       properties:
         CFBundleDisplayName: PocketVM
-        CFBundleShortVersionString: "0.4"
-        CFBundleVersion: "4"
+        CFBundleShortVersionString: "0.5"
+        CFBundleVersion: "5"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}
@@ -71,5 +71,6 @@ targets:
             rsync -a --delete "${FIRMWARE_SRC}/" "${DEST_APP}/qemu/"
           fi
           echo "Embedded $(ls -1 "${DEST_APP}/Frameworks" | wc -l) framework(s)"
+
 
 

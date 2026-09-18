@@ -119,9 +119,6 @@ const state = {
   // plan, and inventing one is what made this pane look like a demo.
   plan: [],
   // 输出内容 — the files this machine really wrote, listed by the host.
-  outputs: [],
-  // 来源 — what the guest was built from.
-  sources: [],
   // The account behind the CLI inside the guest: its address and plan, as the
   // guest's own app server reported them.
   account: null,
@@ -241,16 +238,16 @@ function renderPlan() {
 
 // ------------------------------------------------------------ 侧边面板
 
-// 计划 / 输出内容 / 来源. Closed by default: a new conversation has none of the
-// three, and an empty column is not a panel. It opens by itself once there is
-// something in it, on a window wide enough to have a column to open — on the
-// tablet the same panel is a drawer that would cover the conversation.
+// 计划 — the setup the emulator is performing, and nothing else: the machine's
+// own files are not a conversation's outputs, and the image it was built from
+// is not one of its sources. Closed unless the user opens it: entering the app
+// is a new conversation, and a new conversation has no column beside it.
 let sidePanelChoice = null;
 
 const isNarrow = () => window.matchMedia("(max-width: 1100px)").matches;
 
 function sidePanelHasContent() {
-  return !state.provision.provisioned || state.outputs.length > 0 || Boolean(state.provision.source);
+  return !state.provision.provisioned;
 }
 
 function sidePanelOpen() {
@@ -267,32 +264,7 @@ function setSidePanel(open) {
 /// The user's own choice wins. Until there is one, the panel follows its
 /// content instead of being permanently on or permanently in the way.
 function syncSidePanel() {
-  setSidePanel(sidePanelChoice ?? (!isNarrow() && sidePanelHasContent()));
-}
-
-function renderOutputs() {
-  const list = $("outputList");
-  list.innerHTML = "";
-  for (const item of state.outputs) {
-    const row = el("li");
-    row.appendChild(el("span", "name", item.name));
-    row.appendChild(el("span", "size", item.size));
-    list.appendChild(row);
-  }
-  syncSidePanel();
-}
-
-function renderSources() {
-  const list = $("sourceList");
-  list.innerHTML = "";
-  // The image the guest was provisioned from, named by the host. Nothing else
-  // is a source of anything in this app.
-  for (const item of state.provision.source ? [{ name: state.provision.source, size: state.provision.image }] : []) {
-    const row = el("li");
-    row.appendChild(el("span", "name", item.name));
-    row.appendChild(el("span", "size", item.size));
-    list.appendChild(row);
-  }
+  setSidePanel(sidePanelChoice ?? false);
 }
 
 // ------------------------------------------------------------- conversation
@@ -1109,11 +1081,8 @@ function applyProvisionState(payload) {
   // at the last number it saw.
   if (payload.fraction === undefined) next.fraction = undefined;
   state.provision = next;
-  state.outputs = payload.outputs ?? state.outputs;
   renderThreads();
   renderPlan();
-  renderOutputs();
-  renderSources();
   renderAccount();
   renderGate();
   if (!$("settings").hidden) renderSettings();
@@ -1579,8 +1548,6 @@ function main() {
   renderThreads();
   renderMessages();
   renderPlan();
-  renderOutputs();
-  renderSources();
   renderAccount();
   renderGate();
   wireComposer();
