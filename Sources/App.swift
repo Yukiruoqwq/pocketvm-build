@@ -859,6 +859,7 @@ struct ContentView: View {
                     .background(.ultraThinMaterial, in: Circle())
             }
             .padding(18)
+            .padding(.bottom, model.executionMode == .interpreter ? 24 : 0)
             .accessibilityLabel("串口控制台")
         }
         .onAppear {
@@ -877,9 +878,15 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showConsole) {
             ConsoleSheet(model: model, showDiagnostics: $showDiagnostics)
+                .safeAreaInset(edge: .bottom, alignment: .trailing) {
+                    if model.executionMode == .interpreter { SlowModeLabel() }
+                }
         }
         .sheet(isPresented: $showDiagnostics) {
             diagnosticsSheet
+                .safeAreaInset(edge: .bottom, alignment: .trailing) {
+                    if model.executionMode == .interpreter { SlowModeLabel() }
+                }
         }
     }
 
@@ -906,5 +913,16 @@ struct ContentView: View {
                 }
             }
         }
+    }
+}
+
+private struct SlowModeLabel: View {
+    var body: some View {
+        Text("慢速模式")
+            .font(.system(size: 12))
+            .foregroundStyle(Color(red: 0.835, green: 0.627, blue: 0))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .allowsHitTesting(false)
     }
 }
