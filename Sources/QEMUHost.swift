@@ -429,9 +429,10 @@ final class QEMUHost {
         let documentsURL = documents().standardizedFileURL
         let candidate = url.standardizedFileURL
         let prefix = documentsURL.path.hasSuffix("/") ? documentsURL.path : documentsURL.path + "/"
+        var isDirectory = ObjCBool(false)
         guard candidate.path == documentsURL.path || candidate.path.hasPrefix(prefix),
-              FileManager.default.fileExists(atPath: candidate.path),
-              !FileManager.default.isDirectory(atPath: candidate.path) else {
+              FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
             throw HostError.imageMissing(url.path)
         }
         return candidate.path
