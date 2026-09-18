@@ -643,11 +643,12 @@ ul { margin: 0; padding: 0; list-style: none; }
   display: flex; align-items: center; justify-content: center;
   /* Below the optical centre, the way the app's own empty states sit. */
   padding: 13vh 24px 24px;
-  /* Barely tinted: the blur is what separates the gate from the app, and a
-     heavier wash is what made it disappear on a light page. */
-  background: light-dark(rgb(255 255 255 / 4%), rgb(0 0 0 / 12%));
-  -webkit-backdrop-filter: blur(38px) saturate(180%);
-  backdrop-filter: blur(38px) saturate(180%);
+  /* A neutral veil, not a white one: white over this app's white pages is the
+     same colour, so the glass was invisible in light mode. The blur is kept
+     short enough that what is behind it is still recognisable as content. */
+  background: light-dark(rgb(0 0 0 / 6%), rgb(0 0 0 / 22%));
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
   transition: opacity .45s ease, -webkit-backdrop-filter .45s ease, backdrop-filter .45s ease;
 }
 .vm-gate[hidden] { display: none; }

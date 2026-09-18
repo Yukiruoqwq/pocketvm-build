@@ -158,6 +158,7 @@ bash scripts/build_local.sh path/to/UTM.ipa
 
 ## Status
 
-The app has not been run on the device yet. What is verified today is the build
-itself and the guest-side design; the first boot, the serial console and the
-sign-in flow are all still assumptions until they run.
+The first boot, the serial console and the guest provisioning have all run on
+the device: cloud-init sets the guest up, the host reads the same console the
+terminal shows, and `provision.json` ends up marked complete. `docs/ON-DEVICE.md`
+is the checklist, including what the gate is waiting for on every later boot.

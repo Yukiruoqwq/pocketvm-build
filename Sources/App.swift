@@ -42,6 +42,9 @@ final class VMModel: ObservableObject {
     private var consoleBuffer = Data()
     private var observers: [AnyCancellable] = []
     private var probeTask: Task<Void, Never>?
+    /// Set once the guest's own OS has been heard from, which is what makes
+    /// typing at the console safe.
+    private var probeArmed = false
 
     /// Installed by the web view so console bytes can reach the terminal.
     var pushToWeb: (([String: Any]) -> Void)?
@@ -320,20 +323,45 @@ final class VMModel: ObservableObject {
             markCodexReady()
             return
         }
-        guard provisioner.isProvisioned, !codexReady, bootDetail != "正在启动 Codex CLI" else { return }
-        // The distribution's banner and the shell prompt are both output from
-        // something that can read what is typed back.
-        if line.contains("Debian GNU/Linux") || line.contains("@pocketvm:") {
-            sendProbe()
-        } else if bootDetail.isEmpty {
+        guard provisioner.isProvisioned, !codexReady else { return }
+
+        // The gate starts at 正在启动 QEMU; anything at all from the guest means
+        // the emulator is up and the guest is the thing booting now.
+        if bootDetail == "正在启动 QEMU" {
             bootDetail = "正在引导系统"
             pushProvisionState()
         }
+
+        // A shell prompt is the one line that proves something is reading the
+        // console, so the probe is answered as soon as it is typed.
+        if line.contains("@pocketvm:") {
+            sendProbe()
+            return
+        }
+        // Anything else only shortens the wait before the loop starts typing.
+        if bootDetail != "正在启动 Codex CLI", lineLooksLikeGuestBoot(line) {
+            probeArmed = true
+        }
+    }
+
+    /// Lines the firmware and the boot loader do not print.
+    ///
+    /// The distribution's own name is deliberately not one of them: GRUB's menu
+    /// entry says "Debian GNU/Linux" long before the guest is running, which is
+    /// exactly how the probe used to end up typed at the boot menu and the gate
+    /// skipped straight from 正在启动 QEMU to 正在启动 Codex CLI.
+    private func lineLooksLikeGuestBoot(_ line: String) -> Bool {
+        line.contains("Linux version")
+            || line.contains("systemd[")
+            || line.contains("Reached target")
+            || line.contains("cloud-init")
     }
 
     private func sendProbe() {
-        bootDetail = "正在启动 Codex CLI"
-        pushProvisionState()
+        if bootDetail != "正在启动 Codex CLI" {
+            bootDetail = "正在启动 Codex CLI"
+            pushProvisionState()
+        }
         host.writeToConsole(Self.probeCommand + "\n")
     }
 
@@ -341,21 +369,25 @@ final class VMModel: ObservableObject {
         guard !codexReady else { return }
         codexReady = true
         bootDetail = ""
+        probeArmed = false
         probeTask?.cancel()
         probeTask = nil
         pushProvisionState()
     }
 
-    /// A slow machine can take minutes to reach a prompt, and the firmware's
-    /// own menu reads the serial line, so nothing is typed at it before the
-    /// guest has had time to get past it. The banner or the prompt sends the
-    /// probe immediately; this only covers output this device has never shown.
+    /// A slow machine can take minutes to reach a prompt, and the boot menu
+    /// reads the serial line, so nothing is typed at it until the guest itself
+    /// has been heard from. Once it has, the retries are frequent; before that
+    /// they are slow enough to stay out of the boot's way.
     private func startProbeLoop() {
         probeTask?.cancel()
+        probeArmed = false
         probeTask = Task { [weak self] in
             var attempts = 0
             while !Task.isCancelled {
-                try? await Task.sleep(for: attempts < 3 ? .seconds(150) : .seconds(60))
+                let armed = self?.probeArmed ?? false
+                let wait: Duration = armed ? .seconds(10) : (attempts < 1 ? .seconds(120) : .seconds(60))
+                try? await Task.sleep(for: wait)
                 guard let self, self.isRunning, !self.codexReady else { return }
                 attempts += 1
                 self.sendProbe()
