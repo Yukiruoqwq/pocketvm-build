@@ -31,6 +31,10 @@ final class CodexAuth: ObservableObject {
 
     @Published private(set) var state: State = .unknown
     @Published private(set) var log: [String] = []
+    /// The last lines the guest actually returned. This is what the settings
+    /// page shows when a login is stuck: it separates "the CLI said nothing"
+    /// from "the CLI said something the app did not understand".
+    @Published private(set) var trace: [String] = []
 
     private var send: ((String) -> Void)?
     private var timer: Timer?
@@ -46,6 +50,7 @@ final class CodexAuth: ObservableObject {
         pendingCode = nil
         polls = 0
         log.removeAll()
+        trace.removeAll()
         state = .starting
         send("start")
         schedulePoll()
@@ -67,6 +72,7 @@ final class CodexAuth: ObservableObject {
     func ingest(line: String) {
         let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        noteTrace(text)
 
         // A shell that cannot find the script means the guest is not ready, or
         // was installed by a build that put it somewhere this shell's PATH does
@@ -110,6 +116,18 @@ final class CodexAuth: ObservableObject {
         }
     }
 
+    /// The command the host sent, so the trace has both sides of the exchange.
+    func noteSent(_ text: String) {
+        noteTrace("> \(text)")
+    }
+
+    private func noteTrace(_ text: String) {
+        trace.append(text)
+        if trace.count > 80 {
+            trace.removeFirst(trace.count - 80)
+        }
+    }
+
     private func schedulePoll() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 8, repeats: true) { [weak self] _ in
@@ -120,6 +138,11 @@ final class CodexAuth: ObservableObject {
                 self.polls += 1
                 if self.polls > 120 {
                     self.cancel()
+                    return
+                }
+                if self.polls > 10, case .starting = self.state {
+                    self.cancel()
+                    self.state = .failed("登录超时，没有收到 Codex 的输出")
                     return
                 }
                 self.send?("status")

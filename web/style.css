@@ -722,6 +722,14 @@ ul { margin: 0; padding: 0; list-style: none; }
 .switch input:checked + span::after { transform: translateX(16px); }
 
 .value { font-size: var(--text-sm); color: var(--fg-dim); }
+/* The login trace is evidence, not prose: keep it readable and out of the
+   conversation column. */
+.value-block {
+  max-width: 62%; max-height: 180px; overflow: auto;
+  white-space: pre-wrap; word-break: break-all; text-align: left;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: var(--text-xs); color: var(--fg-dim);
+}
 /* Two controls on one settings row, e.g. open the link and copy it. */
 .row-buttons { display: flex; gap: 6px; }
 .btn {

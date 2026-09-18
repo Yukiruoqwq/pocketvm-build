@@ -620,7 +620,11 @@ final class VMModel: ObservableObject {
     /// useless on an already-installed machine.
     private func runAuth(_ subcommand: String) {
         let command = authShellCommand(subcommand)
-        let agentScript = "sudo -u codex -H -i bash -lc \(ConsoleText.shellQuoted(command))"
+        // `-i` would run a login shell and then hand it the quoted command as a
+        // second shell line; on this image that nested quoting is easy to lose.
+        // A plain `-H bash -lc` runs the command directly as the codex user.
+        let agentScript = "sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))"
+        auth.noteSent("auth \(subcommand)")
         if provisioner.agentIsLive {
             queueAuth(agentScript)
             return
@@ -642,6 +646,7 @@ final class VMModel: ObservableObject {
             }
             guard let self else { return }
             self.append(diagnostic: "auth: 没有代理，改用串口")
+            self.auth.noteSent("serial \(subcommand)")
             self.host.writeToConsole(command + "\n")
         }
     }
@@ -657,9 +662,9 @@ final class VMModel: ObservableObject {
                 + "exec setsid codex login --device-auth; else "
                 + "exec nohup codex login --device-auth; fi ) "
                 + ">\(log) 2>&1 </dev/null & "
-                + "sleep 5; codex login status 2>/dev/null; tail -n 40 \(log) 2>/dev/null"
+                + "sleep 5; timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
         }
-        return "codex login status 2>/dev/null; tail -n 40 \(log) 2>/dev/null"
+        return "timeout 10 codex login status 2>/dev/null || true; tail -n 40 \(log) 2>/dev/null"
     }
 
     private func queueAuth(_ script: String) {
@@ -982,7 +987,7 @@ final class VMModel: ObservableObject {
     }
 
     func pushAuthState() {
-        var payload: [String: Any] = ["log": auth.log]
+        var payload: [String: Any] = ["log": auth.log, "trace": auth.trace]
         switch auth.state {
         case .unknown: payload["state"] = "unknown"
         case .signedOut: payload["state"] = "signedOut"

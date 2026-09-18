@@ -790,6 +790,11 @@ function rowsFor(page) {
             : button("启动", "btn-primary", "start"),
       },
       {
+        label: "登录输出",
+        desc: "",
+        control: () => el("div", "value-block", (auth.trace || []).slice(-16).join("\n") || "暂无输出"),
+      },
+      {
         label: "模型",
         // The list comes from the account, so this is a fetch, not a setting.
         desc: state.model.error || (model ? `${availableModels().length} 个可用模型` : "登录后从客户机的 Codex 获取"),
