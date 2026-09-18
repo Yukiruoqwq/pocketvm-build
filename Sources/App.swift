@@ -26,6 +26,7 @@ final class VMModel: ObservableObject {
     let auth = CodexAuth()
 
     private let host = QEMUHost()
+    private let hostLog = HostLog()
     private let consoleLimit = 200_000
     /// Serial output arrives in chunks that can split a line, or a UTF-8
     /// character. Lines are only interpreted once they are complete.
@@ -229,6 +230,7 @@ final class VMModel: ObservableObject {
     }
 
     private func append(diagnostic line: String) {
+        hostLog.write(line)
         diagnostics.append(line)
         if diagnostics.count > 400 {
             diagnostics.removeFirst(diagnostics.count - 400)
