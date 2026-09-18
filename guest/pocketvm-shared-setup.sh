@@ -48,4 +48,12 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable pocketvm-shared.service
-systemctl start --no-block pocketvm-shared.service
+systemctl start pocketvm-shared.service
+for attempt in {1..20}; do
+  if mountpoint -q /home/codex/Shared && timeout 5 ls /home/codex/Shared >/dev/null; then
+    curl --noproxy '*' -fsS -m 10 -H 'Content-Type: application/json' -d '{"ready":true}' "${POCKETVM_BASE:-http://10.0.2.2:8474}/shared-ready" >/dev/null
+    exit 0
+  fi
+  sleep 1
+done
+exit 1

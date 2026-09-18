@@ -81,6 +81,7 @@ final class VMModel: ObservableObject {
     private var stopping = false
     private var starting = false
     @Published private(set) var executionMode: ExecutionMode?
+    private var sharedReady = false
     @Published var importPicker: ImportKind?
     private var importedAttachments: [String: (path: String, image: Bool)] = [:]
     private func registerImport(_ url: URL, image: Bool) {
@@ -193,7 +194,7 @@ final class VMModel: ObservableObject {
         provisioner.onFinished = { [weak self] state in
             Task { @MainActor in
                 guard let self else { return }
-                self.appendStatus("系统准备完成，登录口令 \(state.password)")
+                self.appendStatus("系统准备完成")
                 // Installation only proves that the binary was written. The
                 // running guest still has to start its report service and CLI;
                 // The persistent protocol channel owns CLI readiness.
@@ -444,6 +445,7 @@ final class VMModel: ObservableObject {
         let attachments = attachmentIDs.compactMap { importedAttachments[$0] }
         guard !text.isEmpty || !attachments.isEmpty else { return }
         guard isRunning, codexReady else { conversationError("Codex 未连接，消息未发送"); return }
+        guard attachments.isEmpty || sharedReady else { conversationNotice("共享目录尚未就绪，附件未发送"); return }
         guard !promptInFlight else { conversationNotice("上一条消息仍在处理中"); return }
         promptInFlight = true
         pushToWeb?(["action": "promptState", "payload": ["busy": true]])
@@ -489,6 +491,9 @@ final class VMModel: ObservableObject {
                         let content = item["content"] as? [[String: Any]] ?? []
                         self.transcript.append(["role": "user", "text": content.compactMap { $0["text"] as? String }.joined(separator: "\n")])
                     }
+                }
+                if let error = turn["error"] as? [String: Any] {
+                    self.transcript.append(["role": "error", "text": error["message"] as? String ?? "回合失败"])
                 }
             }
             self.pushMessages()
@@ -595,6 +600,9 @@ final class VMModel: ObservableObject {
         let text = String(decoding: body, as: UTF8.self)
         append(diagnostic: "guest reported \(path) \(text.prefix(160))")
         switch path {
+        case "/shared-ready":
+            let report = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any]
+            sharedReady = report?["ready"] as? Bool == true
         case "/boot":
             provisioner.acknowledgeSystemBoot()
             // The guest's own system is up and reachable. Everything left is
@@ -654,6 +662,7 @@ final class VMModel: ObservableObject {
         bootDetail = bootProgress.phase.detail
         executionMode = .select(jitAvailable: JIT.isDebugged)
         pushProvisionState()
+        sharedReady = false
         refreshedSignInRevision = -1
         modelRequestID = UUID(); modelsLoading = false
         defer { starting = false; pushProvisionState() }

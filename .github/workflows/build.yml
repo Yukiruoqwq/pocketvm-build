@@ -31,6 +31,7 @@ jobs:
           node --test scripts/test-app-server.mjs
           node --test scripts/test-terminal-replay.cjs
           node --test scripts/test-boot-services.mjs
+          node --test scripts/test-frontend.cjs
           node --check web/app.js
           node --check web/terminal.js
           for script in guest/*.sh; do bash -n "$script"; done
