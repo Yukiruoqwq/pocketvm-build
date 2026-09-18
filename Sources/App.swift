@@ -389,7 +389,11 @@ final class VMModel: ObservableObject {
     /// Follows the guest's own console so the gate can say where the machine is.
     private func noteBoot(line: String) {
         guard isRunning else { return }
-        if line.contains("POCKETVM_CODEX_READY") {
+        // An exact line, not a substring: the probe the host types contains this
+        // same string, and the guest's console echoes what is typed. Matching a
+        // substring lifted the glass on the echo — milliseconds after the probe
+        // was sent, before the guest had answered anything.
+        if line.trimmingCharacters(in: .whitespaces) == "POCKETVM_CODEX_READY" {
             markCodexReady()
             return
         }
