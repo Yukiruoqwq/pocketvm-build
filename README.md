@@ -14,7 +14,7 @@ adequate for a headless Linux environment driven by an agent.
 
 The goal here is not to recreate UTM. It is a small app whose entire job is:
 
-1. Acquire JIT so QEMU's translator can emit code.
+1. Select the native translator when JIT is available, otherwise the TCI interpreter.
 2. Run a QEMU system emulator in-process.
 3. Describe the VM in a plain, versioned config file.
 4. Expose the console.
@@ -83,6 +83,30 @@ by hand or by the frontend; read at VM start.
 ```
 
 Drive paths are relative to `Documents/`.
+
+## Developer SSH
+
+Settings → Virtual machine → Developer → SSH enables a loopback-only port
+forward, default `2222`, to guest port `22`. Save and restart the VM.
+The guest user is `codex`; its password is shown in the same settings page.
+Use USB forwarding on the computer, then connect through that local port:
+
+```sh
+python -m pymobiledevice3 usbmux forward 2222 2222
+# In a second terminal:
+ssh -p 2222 codex@127.0.0.1
+```
+
+No LAN listener is opened. The switch is off in existing and new configurations
+until explicitly enabled. The port is restricted to 1024–65535; 8474 is reserved.
+
+## No-JIT mode
+
+Installation and boot select a backend using the process code-signing flags.
+Without JIT, the app loads UTM SE's TCI runtime with single-thread translation
+and no executable code cache. Both backends are embedded; the selection does
+not depend on terminal output. The yellow status remains visible throughout
+the web interface while interpreter mode is selected.
 
 ## JIT
 

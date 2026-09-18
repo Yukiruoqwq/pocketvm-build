@@ -222,7 +222,11 @@ final class Provisioner: ObservableObject {
         return (configuration, profile)
     }
 
-    /// Feeds one line of guest console output through the state machine.
+    func failBoot(_ error: Error) {
+        stage = .failed(String(describing: error))
+    }
+
+    /// Structured installation reports from the guest.
     func installationEvent(_ data: Data) {
         guard let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let phase = event["phase"] as? String else { return }

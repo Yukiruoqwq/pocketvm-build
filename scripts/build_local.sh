@@ -53,6 +53,15 @@ fi
 
 # ---------------------------------------------------------------------- build
 
+# Always package both execution backends, including local builds.
+SE_WORK="$(mktemp -d)"
+trap 'rm -rf "$SE_WORK"' EXIT
+curl -fL --retry 3 https://github.com/utmapp/UTM/releases/download/v5.0.5/UTM-SE.ipa -o "$SE_WORK/UTM-SE.ipa"
+echo "a2496c8435cedfb7373ba6f53884cca1aff54e030628258e91d7bb5685aa1334  $SE_WORK/UTM-SE.ipa" | shasum -a 256 -c -
+unzip -q "$SE_WORK/UTM-SE.ipa" 'Payload/*.app/Frameworks/*' 'Payload/*.app/qemu/*' -d "$SE_WORK/extracted"
+node scripts/slim_runtime.mjs "$SE_WORK/extracted/Payload/UTM SE.app" "$SE_WORK/runtime"
+python3 scripts/prepare_interpreter.py "$SE_WORK/runtime" Dependencies
+
 if ! command -v xcodegen >/dev/null 2>&1; then
     echo "xcodegen missing; installing with Homebrew"
     brew install xcodegen

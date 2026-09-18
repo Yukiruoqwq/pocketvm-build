@@ -20,7 +20,7 @@ own app loads it.
 
 The interpreter runtime is from the `UTM-SE.ipa` asset in UTM v5.0.5,
 built with `--enable-tcg-interpreter`. Its framework names and dependency
-install names receive a `tci-` prefix; emulator code is unchanged.
+install names receive a fixed-length `tci` namespace; emulator code is unchanged.
 Source and build scripts: https://github.com/utmapp/UTM/tree/v5.0.5 .
 
 ## Firmware (embedded in the app bundle)

@@ -553,6 +553,7 @@ final class VMModel: ObservableObject {
             codexReady = false
             bootDetail = ""
             status = "failed"
+            provisioner.failBoot(error)
             append(diagnostic: "\(error)")
             appendStatus("启动失败：\(error)")
         }
