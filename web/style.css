@@ -667,8 +667,10 @@ ul { margin: 0; padding: 0; list-style: none; }
 .vm-gate {
   position: fixed; inset: 0; z-index: 38;
   display: flex; align-items: center; justify-content: center;
-  /* Below the optical centre, the way the app's own empty states sit. */
-  padding: 13vh 24px 24px;
+  /* Centred on the card itself. Padding on the top edge of a flex container
+     moves the whole block down by half of it, which grew with the screen and
+     left the card visibly low on the iPad. */
+  padding: 24px;
   /* A neutral veil, not a white one: white over this app's white pages is the
      same colour, so the glass was invisible in light mode. The blur is kept
      short enough that what is behind it is still recognisable as content. */
