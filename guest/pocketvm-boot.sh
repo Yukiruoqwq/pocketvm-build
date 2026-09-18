@@ -38,6 +38,10 @@ fetch pocketvm-app.mjs "$LIB/pocketvm-app.mjs" || true
 if fetch pocketvm-agent.sh /usr/local/bin/pocketvm-agent; then
   chmod 0755 /usr/local/bin/pocketvm-agent
 fi
+if fetch pocketvm-auth /usr/local/bin/pocketvm-auth; then
+  chmod 0755 /usr/local/bin/pocketvm-auth
+  helpers=1
+fi
 
 # The sign-in helper is where the app can find it. cloud-init writes it to
 # /usr/local/sbin for a machine installed by this build's earlier versions, and
@@ -107,14 +111,18 @@ EOF
   # The command agent: the app's way in that does not depend on a shell sitting
   # at a prompt. It runs as root, which is what the sign-in helper needs.
   AGENT=/etc/systemd/system/pocketvm-agent.service
-  if [ -x /usr/local/bin/pocketvm-agent ] && [ ! -f "$AGENT" ]; then
-    cat >"$AGENT" <<'EOF'
+  if [ -x /usr/local/bin/pocketvm-agent ]; then
+    # $BASE is the app's actual helper address for this boot. Writing it into
+    # the unit matters when 8474 was taken and the host had to choose another
+    # port: the agent's built-in default would then point at nothing.
+    cat >"$AGENT" <<EOF
 [Unit]
 Description=PocketVM command agent
 After=network-online.target
 Wants=network-online.target
 
 [Service]
+Environment=POCKETVM_BASE=$BASE
 ExecStart=/usr/local/bin/pocketvm-agent
 Restart=always
 RestartSec=3

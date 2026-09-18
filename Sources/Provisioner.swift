@@ -339,7 +339,7 @@ final class Provisioner: ObservableObject {
         var resources: [String: SeedServer.Resource] = [:]
         for name in [
             "pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh",
-            "pocketvm-agent.sh", "setup-proxy.sh",
+            "pocketvm-agent.sh", "pocketvm-auth", "setup-proxy.sh",
         ] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
@@ -412,10 +412,16 @@ final class Provisioner: ObservableObject {
 
     // MARK: - Commands
 
-    /// The command waiting to be collected, and the answers still expected.
-    private var queuedCommand: (id: String, script: String)?
+    /// Commands waiting to be collected, in the order they were asked for.
+    ///
+    /// A single slot lost the login: the eight-second status poll could replace
+    /// a `start` that the emulated guest had not collected yet, so the device
+    /// code was never requested at all. The queue keeps the start and lets the
+    /// polls wait behind it.
+    private var commandQueue: [(id: String, script: String)] = []
     private var commandCallbacks: [String: (String) -> Void] = [:]
     private var commandCounter = 0
+    private static let commandLimit = 32
     /// When the agent last came asking for work. A guest installed by an older
     /// build has no agent, and the caller needs to know which of the two
     /// channels to use.
@@ -425,25 +431,35 @@ final class Provisioner: ObservableObject {
 
     /// Asks the guest to run a script, and hands the output to `callback`.
     ///
-    /// One at a time: the queue holds a single command so that an answer can
-    /// never be matched to the wrong question.
+    /// The guest collects one at a time, so an answer can never be matched to
+    /// the wrong question; the queue in front of it makes sure a slow guest
+    /// does not lose the command that matters.
     func runInGuest(_ script: String, callback: @escaping (String) -> Void) {
         commandCounter += 1
         let id = String(commandCounter)
-        // A command nobody collected is replaced rather than queued behind: the
-        // newest question is the one whose answer is still wanted.
-        if let old = queuedCommand { commandCallbacks.removeValue(forKey: old.id) }
-        queuedCommand = (id: id, script: script)
+        // The status poll asks the same question every eight seconds. One copy
+        // in the queue is enough; the guest is slow, and stacking identical
+        // commands would only delay the start behind them.
+        if commandQueue.contains(where: { $0.script == script }) {
+            onLog?("coalesced a duplicate command for the guest (#\(id))")
+            return
+        }
+        commandQueue.append((id: id, script: script))
         commandCallbacks[id] = callback
-        onLog?("queued a command for the guest (#\(commandCounter))")
+        while commandQueue.count > Self.commandLimit {
+            let dropped = commandQueue.removeFirst()
+            commandCallbacks.removeValue(forKey: dropped.id)
+            onLog?("dropped stale command #\(dropped.id) for the guest")
+        }
+        onLog?("queued a command for the guest (#\(id), \(commandQueue.count) waiting)")
     }
 
     /// `/command`: the guest polling for work.
     private func dynamicResource(_ path: String) -> SeedServer.Resource? {
         guard path == "/command" else { return nil }
         agentLastSeen = Date()
-        guard let queued = queuedCommand else { return .text("") }
-        queuedCommand = nil
+        guard !commandQueue.isEmpty else { return .text("") }
+        let queued = commandQueue.removeFirst()
         return .text("\(queued.id)\n\(queued.script)")
     }
 
@@ -625,29 +641,8 @@ final class Provisioner: ObservableObject {
     /// in the background with its output on disk, and the state has to come back
     /// as a couple of fixed lines rather than as a redrawn TUI.
     private func authScript() -> String {
-        """
-        #!/bin/bash
-        # Written by PocketVM. Prints a fixed vocabulary the host parses.
-        LOG=/tmp/pocketvm-login.log
-
-        if [ "${1:-status}" = "start" ]; then
-          rm -f "$LOG"
-          nohup codex login --device-auth >"$LOG" 2>&1 </dev/null &
-          sleep 2
-        fi
-
-        if codex login status 2>/dev/null | grep -qi "not logged in"; then
-          echo POCKETVM_AUTH_STATE not_logged_in
-        elif codex login status 2>/dev/null | grep -qi "logged in"; then
-          echo POCKETVM_AUTH_STATE logged_in
-        else
-          echo POCKETVM_AUTH_STATE unknown
-        fi
-
-        if [ -s "$LOG" ]; then
-          tail -n 30 "$LOG" | tr -d '\\r'
-        fi
-        """
+        Self.bundledGuestFile("pocketvm-auth")
+            ?? "#!/bin/bash\necho POCKETVM_AUTH_STATE missing\n"
     }
 
     /// Runs inside the guest on first boot.

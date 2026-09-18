@@ -763,8 +763,21 @@ function rowsFor(page) {
       },
       {
         label: "登录状态",
-        desc: "",
-        control: () => el("span", "value", auth.state === "signedIn" ? "已登录" : auth.state === "awaiting" ? "等待确认" : "未登录"),
+        desc: auth.state === "failed" ? auth.reason || "获取登录代码失败" : "",
+        control: () =>
+          el(
+            "span",
+            "value",
+            auth.state === "signedIn"
+              ? "已登录"
+              : auth.state === "awaiting"
+                ? "等待确认"
+                : auth.state === "starting"
+                  ? "获取代码中"
+                  : auth.state === "failed"
+                    ? "失败"
+                    : "未登录"
+          ),
       },
       {
         label: "登录",

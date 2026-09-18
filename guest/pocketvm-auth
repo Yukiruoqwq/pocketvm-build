@@ -1,0 +1,34 @@
+#!/bin/bash
+# Written by PocketVM. Prints a fixed vocabulary the host parses.
+#
+# User-facing words are only used when the app cannot get a device code at all.
+# The actual login runs in the background so the serial line stays free for the
+# app to poll it.
+set -u
+
+LOG=/tmp/pocketvm-login.log
+
+if [ "${1:-status}" = "start" ]; then
+  rm -f "$LOG"
+  if command -v setsid >/dev/null 2>&1; then
+    setsid codex login --device-auth >"$LOG" 2>&1 </dev/null &
+  else
+    nohup codex login --device-auth >"$LOG" 2>&1 </dev/null &
+  fi
+  # The CLI needs a moment to write the URL and code. The app polls the log
+  # after this, so a slow first paint is not a failure.
+  sleep 5
+fi
+
+status="$(timeout 20 codex login status 2>/dev/null || true)"
+if printf '%s' "$status" | grep -qi "not logged in"; then
+  echo POCKETVM_AUTH_STATE not_logged_in
+elif printf '%s' "$status" | grep -qi "logged in"; then
+  echo POCKETVM_AUTH_STATE logged_in
+else
+  echo POCKETVM_AUTH_STATE unknown
+fi
+
+if [ -s "$LOG" ]; then
+  tail -n 30 "$LOG" | tr -d '\r'
+fi

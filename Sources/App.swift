@@ -248,8 +248,9 @@ final class VMModel: ObservableObject {
     }
 
     func appendStatus(_ text: String) {
-        transcript.append(["role": "status", "text": text])
-        pushMessages()
+        // Status belongs in the host log, not in the conversation. These lines
+        // were the ones filling the thread with machine messages.
+        append(diagnostic: "status: \(text)")
     }
 
     /// A line the frontend wants in the host log. The page has no other way to
@@ -628,15 +629,37 @@ final class VMModel: ObservableObject {
             + "[ -x \"$p\" ] && exec sudo -u codex -H -i \"$p\" \(subcommand); done; "
             + "echo POCKETVM_AUTH_STATE missing"
         if provisioner.agentIsLive {
-            provisioner.runInGuest(script) { [weak self] output in
-                Task { @MainActor in self?.ingestAuthOutput(output) }
-            }
+            queueAuth(script)
             return
         }
-        // No agent: a guest installed by an older build. The console is the only
-        // way in, and it is the way this used to be done.
-        append(diagnostic: "auth: 客户机还没有代理，改用串口")
-        host.writeToConsole("pocketvm-auth \(subcommand)\n")
+        // The agent polls every couple of seconds, so "not live at this exact
+        // instant" is normal while the emulated guest is waking up. Queue the
+        // command as soon as it appears instead of falling back to a serial
+        // shell that may not exist. The serial path stays as a last resort.
+        append(diagnostic: "auth: 等待客户机代理")
+        Task { [weak self] in
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                if self.provisioner.agentIsLive {
+                    self.queueAuth(script)
+                    return
+                }
+            }
+            guard let self else { return }
+            guard subcommand == "start" else {
+                self.append(diagnostic: "auth: 没有代理，跳过串口状态查询")
+                return
+            }
+            self.append(diagnostic: "auth: 20 秒内没有代理，改用串口")
+            self.host.writeToConsole("pocketvm-auth start\n")
+        }
+    }
+
+    private func queueAuth(_ script: String) {
+        provisioner.runInGuest(script) { [weak self] output in
+            Task { @MainActor in self?.ingestAuthOutput(output) }
+        }
     }
 
     private func ingestAuthOutput(_ output: String) {
