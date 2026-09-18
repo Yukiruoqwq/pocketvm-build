@@ -48,30 +48,34 @@ fi
 # The console the app shows. The serial line is a terminal only once something
 # is reading it and printing to it, and a stock cloud image leaves ttyAMA0
 # unattended — which is why the panel used to be empty.
-AUTOLOGIN=/etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
-if [ ! -f "$AUTOLOGIN" ]; then
-  install -d "$(dirname "$AUTOLOGIN")" 2>/dev/null || true
-  cat >"$AUTOLOGIN" <<'EOF'
+#
+# All of it runs detached, and every systemd call is bounded. This script is
+# cloud-init's bootcmd, which runs in the init stage: a start job that cannot
+# complete there waits for ever and holds the whole boot with it — which is
+# exactly what happened the first time a fresh install ran this script. The
+# machine now boots whether or not its console comes up with it.
+install_console() {
+  AUTOLOGIN=/etc/systemd/system/serial-getty@ttyAMA0.service.d/autologin.conf
+  if [ ! -f "$AUTOLOGIN" ]; then
+    install -d "$(dirname "$AUTOLOGIN")" 2>/dev/null || true
+    cat >"$AUTOLOGIN" <<'EOF'
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin codex --keep-baud 115200,38400,9600 %I $TERM
 EOF
-  systemctl daemon-reload >/dev/null 2>&1 || true
-fi
-serial=0
-if systemctl enable --now serial-getty@ttyAMA0.service >/dev/null 2>&1; then
-  serial=1
-fi
+    timeout 20 systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  serial=0
+  timeout 20 systemctl enable serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
+  if timeout 20 systemctl start serial-getty@ttyAMA0.service >/dev/null 2>&1; then
+    serial=1
+  fi
 
-# A login prompt on the picture as well, so the 画面 tab shows a live machine
-# instead of the boot loader's last frame.
-systemctl enable --now getty@tty1.service >/dev/null 2>&1 || true
-
-# The boot report. Written here as well as at install time so that a guest set
-# up by an older build gets it without being reinstalled.
-UNIT=/etc/systemd/system/pocketvm-report.service
-if [ ! -f "$UNIT" ]; then
-  cat >"$UNIT" <<'EOF'
+  # The boot report. Written here as well as at install time so that a guest set
+  # up by an older build gets it without being reinstalled.
+  UNIT=/etc/systemd/system/pocketvm-report.service
+  if [ ! -f "$UNIT" ]; then
+    cat >"$UNIT" <<'EOF'
 [Unit]
 Description=PocketVM boot report
 After=multi-user.target network-online.target
@@ -85,10 +89,13 @@ ExecStart=/usr/local/sbin/pocketvm-report
 [Install]
 WantedBy=multi-user.target
 EOF
-  systemctl daemon-reload >/dev/null 2>&1 || true
-fi
-systemctl enable pocketvm-report.service >/dev/null 2>&1 || true
+    timeout 20 systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  timeout 20 systemctl enable pocketvm-report.service >/dev/null 2>&1 || true
 
-# What this run managed, so the host log answers "did the guest pick it up"
-# without anyone having to look at the screen.
-post console "{\"serial\":$serial,\"helpers\":$helpers}"
+  # What this run managed, so the host log answers "did the guest pick it up"
+  # without anyone having to look at the screen.
+  post console "{\"serial\":$serial,\"helpers\":$helpers}"
+}
+
+install_console >/dev/null 2>&1 &
