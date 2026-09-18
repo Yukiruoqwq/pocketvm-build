@@ -67,6 +67,7 @@ setup_proxy() {
   if [ $? -eq 0 ]; then
     install -d "$(dirname "$marker")" 2>/dev/null || true
     echo "$url" >"$marker"
+    proxy_changed=1
     post proxy '{"ok":true}'
   else
     # Left unmarked on purpose: the next boot tries again.
@@ -75,83 +76,16 @@ setup_proxy() {
 }
 
 install_self() {
-  command -v curl >/dev/null 2>&1 || return 1
-  install -d "$LIB" || return 1
-  curl --noproxy '*' -fsS -m 60 "$BASE/pocketvm-report.sh" -o /usr/local/sbin/pocketvm-report.new || return 1
-  bash -n /usr/local/sbin/pocketvm-report.new || return 1
-  mv /usr/local/sbin/pocketvm-report.new /usr/local/sbin/pocketvm-report || return 1
-  curl --noproxy '*' -fsS -m 60 "$BASE/pocketvm-app.mjs" -o "$LIB/pocketvm-app.mjs.new" || return 1
-  node --check "$LIB/pocketvm-app.mjs.new" >/dev/null 2>&1 || node --input-type=module --check < "$LIB/pocketvm-app.mjs.new" || return 1
-  mv "$LIB/pocketvm-app.mjs.new" "$LIB/pocketvm-app.mjs" || return 1
-  chmod 0755 /usr/local/sbin/pocketvm-report
-  cat >/etc/systemd/system/pocketvm-report.service <<'EOF'
-[Unit]
-Description=PocketVM boot report
-Documentation=https://github.com/abasbdjasdl/pocketvm-build
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-TimeoutStartSec=1800
-ExecStart=/usr/local/sbin/pocketvm-report
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload >/dev/null 2>&1 || true
-  systemctl enable pocketvm-report.service >/dev/null 2>&1 || true
+  curl --noproxy '*' -fsS -m 60 "$BASE/pocketvm-boot.sh" -o /tmp/pocketvm-install-services.sh || return 1
+  bash -n /tmp/pocketvm-install-services.sh || return 1
+  POCKETVM_BASE="$BASE" bash /tmp/pocketvm-install-services.sh || return 1
 }
-
 report() {
-  # The system is up; the CLI inside it is what the host's next line is about.
-  # pocketvm-boot.sh sends this earlier in the boot, and this is the fallback for
-  # a guest that has not picked that script up yet.
-  post boot '{"stage":"booting"}'
-  if ! command -v codex >/dev/null 2>&1; then
-    post boot-error '{"error":"Codex CLI 未安装完成"}'
-    return 1
-  fi
-  if ! timeout 75 runuser -u codex -- env HOME=/home/codex node "$LIB/pocketvm-app.mjs" --health >/tmp/pocketvm-health.json 2>/tmp/pocketvm-health.log; then
-    post boot-error '{"error":"CLI 启动检查失败，请查看 /tmp/pocketvm-health.log"}'
-    return 1
-  fi
-  if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.initialized === true ? 0 : 1)' /tmp/pocketvm-health.json; then
-    post ready '{"stage":"ready"}' || return 1
-  else
-    post boot-error "$(cat /tmp/pocketvm-health.json)"
-    return 1
-  fi
-  # The proxy must be ready before app-server is contacted. The service runs as
-  # root, while the authenticated CLI state belongs to codex; querying as root
-  # made every installation look signed out and returned an empty thread list.
-  setup_proxy
-  # One app-server session answers all of it: models, usage limits and the
-  # conversation list. Starting the server three times would cost more in the
-  # emulated guest than the answers do.
-  if [ -f "$LIB/pocketvm-app.mjs" ] && command -v node >/dev/null 2>&1; then
-    if [ -r /etc/profile.d/pocketvm-proxy.sh ]; then . /etc/profile.d/pocketvm-proxy.sh; fi
-    HTTPS_PROXY="${HTTPS_PROXY:-}"
-    HTTP_PROXY="${HTTP_PROXY:-}"
-    ALL_PROXY="${ALL_PROXY:-}"
-    NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.2.2}"
-    if id codex >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
-      runuser -u codex -- env HOME=/home/codex HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" ALL_PROXY="$ALL_PROXY" NO_PROXY="$NO_PROXY" \
-        node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
-    elif id codex >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
-      sudo -u codex -H env HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" ALL_PROXY="$ALL_PROXY" NO_PROXY="$NO_PROXY" \
-        node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
-    else
-      node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
-    fi
-    if [ -s /tmp/pocketvm-report.json ]; then
-      post report "$(cat /tmp/pocketvm-report.json)"
-      if node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.exit(r.initialized === true ? 0 : 1)' /tmp/pocketvm-report.json; then
-        post ready '{"stage":"ready"}'
-      fi
-    fi
-  fi
+  command -v node >/dev/null 2>&1 || return 1
+  command -v codex >/dev/null 2>&1 || return 1
+  proxy_changed=0
+  setup_proxy || true
+  if [ "$proxy_changed" = 1 ]; then systemctl restart --no-block pocketvm-relay.service || return 1; fi
   upload_boot_files
 }
 

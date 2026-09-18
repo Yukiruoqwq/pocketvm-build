@@ -47,6 +47,7 @@ final class SeedServer {
     /// actually reached the server.
     var onRequest: ((String) -> Void)?
     /// Called with the body of every POST: the guest reporting something.
+    var onExchange: ((Data) -> Data?)?
     var onPost: ((String, Data) -> Bool)?
     /// Called with the body of every upload: a file the guest is handing over.
     var onUpload: ((String, Data) -> Bool)?
@@ -217,6 +218,15 @@ final class SeedServer {
             return
         }
 
+        if method == "POST", path == "/rpc" {
+            guard body.count <= Self.reportLimit,
+                  let reply = DispatchQueue.main.sync(execute: { self.onExchange?(body) }) else {
+                send(connection, status: "400 Bad Request", contentType: "application/json", body: Data("{}".utf8))
+                return
+            }
+            send(connection, status: "200 OK", contentType: "application/json", body: reply)
+            return
+        }
         if method == "POST" {
             guard body.count <= Self.reportLimit else {
                 send(connection, status: "413 Payload Too Large", contentType: "text/plain", body: Data("report too large\n".utf8))

@@ -70,20 +70,16 @@ final class VMModel: ObservableObject {
     /// character. Lines are only interpreted once they are complete.
     private var consoleBuffer = Data()
     private var observers: [AnyCancellable] = []
-    private var probeTask: Task<Void, Never>?
     /// Presses Enter for a boot loader that is waiting for a key.
-    private var bootNudgeTask: Task<Void, Never>?
     /// True from the moment stopping is asked for until the emulator has
     /// actually exited. A start during that window is what used to crash the
     /// app: QEMU cannot be initialised twice in one process.
     private var stopping = false
     private var starting = false
     private var promptInFlight = false
-    private var authRequestPending = false
     private var selectedThreadID: String?
     /// Set once the guest's own OS has been heard from, which is what makes
     /// typing at the console safe.
-    private var probeArmed = false
 
     /// Installed by the web view so console bytes can reach the terminal.
     var pushToWeb: (([String: Any]) -> Void)?
@@ -112,7 +108,7 @@ final class VMModel: ObservableObject {
                 // Base64 rather than a string: the terminal writes bytes, and
                 // escape sequences are allowed to straddle a read boundary.
                 self.pushToWeb?(["action": "terminalOutput", "payload": ["base64": encoded]])
-                self.ingestConsole(data)
+
             }
         }
         host.onLog = { [weak self] line in
@@ -128,11 +124,18 @@ final class VMModel: ObservableObject {
                 self.status = "exited (\(status))"
                 self.codexReady = false
                 self.bootDetail = ""
-                self.probeTask?.cancel()
-                self.probeTask = nil
                 self.pushProvisionState()
             }
         }
+        provisioner.channel.onState = { [weak self] ready, error in
+            guard let self else { return }
+            if ready { self.markCodexReady() } else {
+                self.codexReady = false; self.auth.reset(); self.promptInFlight = false
+                self.bootDetail = error ?? "正在连接 Codex 服务"
+                self.pushProvisionState()
+            }
+        }
+        provisioner.channel.onEvent = { [weak self] message in self?.handleCodexEvent(message) }
         provisioner.onLog = { [weak self] line in
             Task { @MainActor in self?.append(diagnostic: line) }
         }
@@ -145,7 +148,7 @@ final class VMModel: ObservableObject {
                 self.appendStatus("系统准备完成，登录口令 \(state.password)")
                 // Installation only proves that the binary was written. The
                 // running guest still has to start its report service and CLI;
-                // `/ready` is the sole transition into the usable state.
+                // The persistent protocol channel owns CLI readiness.
                 if self.isRunning, !self.codexReady {
                     self.bootDetail = "正在启动 Codex CLI"
                     self.pushProvisionState()
@@ -367,77 +370,82 @@ final class VMModel: ObservableObject {
     ///
     /// Execute through the command agent and return structured CLI events.
     /// Serial input belongs exclusively to the interactive terminal.
+    private var messageIndices: [String: Int] = [:]
+    private func rpc(_ method: String, _ params: [String: Any] = [:], done: @escaping ([String: Any]) -> Void) {
+        provisioner.channel.request(method, params) { [weak self] message in
+            if let error = message["error"] as? [String: Any] {
+                self?.appendStatus(error["message"] as? String ?? "协议请求失败")
+                self?.promptInFlight = false
+                if method == "account/login/start" { self?.auth.fail(error["message"] as? String ?? "登录失败") }
+                return
+            }
+            guard let result = message["result"] as? [String: Any] else { return }
+            done(result)
+        }
+    }
     func handlePrompt(_ text: String) {
         let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000))
-        guard !text.isEmpty else { return }
-        guard isRunning else {
-            appendStatus("虚拟机未运行，先在设置里启动。")
-            return
-        }
-        guard codexReady, !promptInFlight else {
-            appendStatus("客户机尚未就绪或上一条消息仍在执行。")
-            return
-        }
-        transcript.append(["role": "user", "text": text])
-        pushMessages()
+        guard !text.isEmpty, isRunning, codexReady, !promptInFlight else { return }
         promptInFlight = true
-        let command = ConsoleText.execCommand(text, selection: storedModelSelection(), threadID: selectedThreadID)
-        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted("cd /home/codex && " + command))") { [weak self] output in
-            Task { @MainActor in
-                guard let self else { return }
-                self.promptInFlight = false
-                var received = false
-                for line in output.split(separator: "\n") {
-                    guard let data = String(line).data(using: .utf8),
-                          let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                    if event["type"] as? String == "thread.started", let id = event["thread_id"] as? String {
-                        self.selectedThreadID = id
-                    }
-                    if event["type"] as? String == "item.completed",
-                       let item = event["item"] as? [String: Any], item["type"] as? String == "agent_message",
-                       let text = item["text"] as? String {
-                        self.transcript.append(["role": "assistant", "text": text])
-                        received = true
-                    }
-                }
-                if !received { self.appendStatus("Codex 未返回回复：\(output.suffix(1000))") }
-                self.pushMessages()
-                self.requestModels()
+        transcript.append(["role": "user", "text": text]); pushMessages()
+        let send: (String) -> Void = { [weak self] id in
+            guard let self else { return }
+            let selection = self.storedModelSelection()
+            var params: [String: Any] = ["threadId": id, "input": [["type": "text", "text": text, "text_elements": []]]]
+            if let model = selection.model { params["model"] = model }
+            if let effort = selection.effort { params["effort"] = effort }
+            if selection.fast { params["serviceTier"] = "fast" }
+            self.rpc("turn/start", params) { _ in }
+        }
+        if let id = selectedThreadID { rpc("thread/resume", ["threadId": id]) { _ in send(id) } }
+        else {
+            rpc("thread/start", ["cwd": "/home/codex", "approvalPolicy": "on-request", "sandbox": "workspace-write"]) { [weak self] result in
+                guard let thread = result["thread"] as? [String: Any], let id = thread["id"] as? String else { self?.promptInFlight = false; return }
+                self?.selectedThreadID = id; send(id)
             }
         }
     }
-
     func selectThread(_ id: String?) {
-        guard !promptInFlight else { appendStatus("请等待当前回复完成。"); return }
-        selectedThreadID = id
-        transcript = []
-        pushMessages()
-        guard let id, isRunning, codexReady else { return }
-        let command = "node /usr/local/lib/pocketvm/pocketvm-app.mjs thread/read " + ConsoleText.shellQuoted(id)
-        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))") { [weak self] output in
-            Task { @MainActor in
-                guard let self, self.selectedThreadID == id else { return }
-                guard let line = output.split(separator: "\n").first,
-                      let data = String(line).data(using: .utf8),
-                      let response = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let thread = response["thread"] as? [String: Any],
-                      let turns = thread["turns"] as? [[String: Any]] else {
-                    self.appendStatus("读取对话失败：\(output.suffix(500))")
-                    return
-                }
-                for turn in turns {
-                    for item in turn["items"] as? [[String: Any]] ?? [] {
-                        if item["type"] as? String == "agentMessage", let text = item["text"] as? String {
-                            self.transcript.append(["role": "assistant", "text": text])
-                        } else if item["type"] as? String == "userMessage" {
-                            let content = item["content"] as? [[String: Any]] ?? []
-                            let text = content.compactMap { $0["text"] as? String }.joined(separator: "\n")
-                            self.transcript.append(["role": "user", "text": text])
-                        }
+        guard !promptInFlight else { appendStatus("请等待当前回复完成"); return }
+        selectedThreadID = id; transcript = []; messageIndices = [:]; pushMessages()
+        guard let id else { return }
+        rpc("thread/resume", ["threadId": id]) { [weak self] result in
+            guard let self, self.selectedThreadID == id, let thread = result["thread"] as? [String: Any] else { return }
+            for turn in thread["turns"] as? [[String: Any]] ?? [] {
+                for item in turn["items"] as? [[String: Any]] ?? [] {
+                    if item["type"] as? String == "agentMessage", let text = item["text"] as? String {
+                        self.transcript.append(["role": "assistant", "text": text])
+                    } else if item["type"] as? String == "userMessage" {
+                        let content = item["content"] as? [[String: Any]] ?? []
+                        self.transcript.append(["role": "user", "text": content.compactMap { $0["text"] as? String }.joined(separator: "\n")])
                     }
                 }
-                self.pushMessages()
             }
+            self.pushMessages()
+        }
+    }
+    private func handleCodexEvent(_ message: [String: Any]) {
+        guard let method = message["method"] as? String, let params = message["params"] as? [String: Any] else { return }
+        if method == "account/login/completed" { auth.completed(params); refreshCodexStatus(); requestModels(); return }
+        if method == "account/updated" { refreshCodexStatus(); return }
+        guard params["threadId"] as? String == selectedThreadID else { return }
+        if method == "turn/completed" {
+            promptInFlight = false
+            if let turn = params["turn"] as? [String: Any], let error = turn["error"] as? [String: Any] { appendStatus(error["message"] as? String ?? "回合失败") }
+            requestModels()
+        }
+        if method == "item/agentMessage/delta", let id = params["itemId"] as? String, let delta = params["delta"] as? String {
+            let index: Int
+            if let existing = messageIndices[id] { index = existing }
+            else { index = transcript.count; messageIndices[id] = index; transcript.append(["role": "assistant", "text": ""]) }
+            transcript[index]["text"] = (transcript[index]["text"] as? String ?? "") + delta
+            pushMessages()
+        }
+        if method == "item/completed", let item = params["item"] as? [String: Any], item["type"] as? String == "agentMessage",
+           let id = item["id"] as? String, let text = item["text"] as? String {
+            if let index = messageIndices[id] { transcript[index]["text"] = text }
+            else { messageIndices[id] = transcript.count; transcript.append(["role": "assistant", "text": text]) }
+            pushMessages()
         }
     }
 
@@ -457,20 +465,13 @@ final class VMModel: ObservableObject {
     /// installed by an earlier build answers the same question as a new one.
     func requestModels() {
         guard isRunning, codexReady else { return }
-        let command = "node /usr/local/lib/pocketvm/pocketvm-app.mjs"
-        provisioner.runInGuest("sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))") { [weak self] output in
-            Task { @MainActor in
-                guard let self else { return }
-                for line in output.split(separator: "\n") {
-                    if let data = String(line).data(using: .utf8),
-                       (try? JSONSerialization.jsonObject(with: data)) is [String: Any] {
-                        self.apply(report: data)
-                        return
-                    }
-                }
-                self.append(diagnostic: "无法读取账户数据：\(output.suffix(500))")
-            }
+        rpc("model/list", ["includeHidden": true, "limit": 100]) { [weak self] result in
+            self?.models = result["data"] as? [[String: Any]] ?? []; self?.pushModels()
         }
+        rpc("thread/list", ["limit": 50]) { [weak self] result in
+            self?.threads = result["data"] as? [[String: Any]] ?? []; self?.pushAccount()
+        }
+        rpc("account/rateLimits/read") { [weak self] result in self?.usageLimits = result; self?.pushAccount() }
     }
 
     // MARK: - 客户机的上报
@@ -495,11 +496,6 @@ final class VMModel: ObservableObject {
             bootDetail = report?["error"] as? String ?? "CLI 启动检查失败"
             appendStatus(bootDetail)
             pushProvisionState()
-        case "/ready":
-            guard isRunning else { return }
-            markCodexReady()
-        case "/report":
-            apply(report: body)
         default:
             break
         }
@@ -514,71 +510,6 @@ final class VMModel: ObservableObject {
 
     /// One POST carries everything the guest found in a single app-server
     /// session: the models, the usage limits and the conversation list.
-    private func apply(report body: Data) {
-        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return }
-        if let error = object["error"] as? String {
-            models = []
-            modelsError = error
-            append(diagnostic: "guest app-server unavailable: \(error)")
-            pushModels()
-        }
-        if let list = object["models"] as? [[String: Any]] {
-            models = list
-            modelsError = nil
-            append(diagnostic: "guest reported \(list.count) model(s)")
-            pushModels()
-        }
-        if let limits = object["limits"] as? [String: Any] {
-            if let error = limits["error"] as? String {
-                append(diagnostic: "usage limits unavailable: \(error)")
-            } else {
-                usageLimits = limits
-                persist(limits, key: Self.limitsKey)
-            }
-            pushAccount()
-        }
-        if let list = object["threads"] as? [[String: Any]] {
-            threads = list
-            persist(list, key: Self.threadsKey)
-            append(diagnostic: "guest reported \(list.count) conversation(s)")
-            pushAccount()
-        }
-        if let account = object["account"] as? [String: Any] {
-            if let error = account["error"] as? String {
-                append(diagnostic: "account unavailable: \(error)")
-            } else {
-                self.account = account
-                persist(account, key: Self.accountKey)
-                pushAccount()
-            }
-        }
-    }
-
-    /// The one line the host types when the guest has no reporter yet: fetch it
-    /// from the host and install it. After that the guest announces its own boot
-    /// and nothing has to be typed at the console again.
-    private func bootstrapCommand(base: String) -> String {
-        "curl --noproxy '*' -m 60 -fsS \(base)/pocketvm-report.sh -o /tmp/pocketvm-report.sh"
-            + " && sudo bash /tmp/pocketvm-report.sh --install"
-    }
-
-    /// Ends in the same state whichever path delivered the list.
-    private func applyModels(from data: Data) {
-        if let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            models = list
-            modelsError = nil
-            append(diagnostic: "guest reported \(list.count) model(s)")
-            pushModels()
-            return
-        }
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let reason = object["error"] as? String {
-            models = []
-            modelsError = reason
-            pushModels()
-        }
-    }
-
     func pushModels() {
         var payload: [String: Any] = ["models": models]
         if let modelsError { payload["error"] = modelsError }
@@ -586,20 +517,6 @@ final class VMModel: ObservableObject {
     }
 
     /// The guest's answer, as the one line the helper prints.
-    private func noteModels(line: String) {
-        guard let marker = line.range(of: "POCKETVM_MODELS") else { return }
-        let rest = String(line[marker.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        if rest.hasPrefix("FAILED") {
-            models = []
-            modelsError = String(rest.dropFirst("FAILED".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-            append(diagnostic: "model list unavailable: \(modelsError ?? "")")
-            pushModels()
-            return
-        }
-        guard let data = rest.data(using: .utf8) else { return }
-        applyModels(from: data)
-    }
-
     // MARK: - Lifecycle
 
     func start() {
@@ -615,7 +532,6 @@ final class VMModel: ObservableObject {
         auth.reset()
         diagnostics.removeAll()
         consoleBuffer.removeAll(keepingCapacity: true)
-        probeArmed = false
         do {
             let prepared = try await provisioner.prepare()
             configuration = prepared.configuration
@@ -653,10 +569,6 @@ final class VMModel: ObservableObject {
         status = "stopping"
         bootDetail = "正在关机"
         appendStatus("正在请求客户机关机…")
-        probeTask?.cancel()
-        probeTask = nil
-        bootNudgeTask?.cancel()
-        bootNudgeTask = nil
         host.requestPowerDown()
         pushProvisionState()
 
@@ -697,96 +609,14 @@ final class VMModel: ObservableObject {
     // MARK: - Codex sign-in
 
     func beginCodexLogin() {
-        guard isRunning else {
-            appendStatus("先启动虚拟机，再登录 Codex。")
-            return
-        }
-        appendStatus("正在向客户机请求设备代码…")
-        guard !authRequestPending, !auth.state.isWaiting else { return }
-        auth.begin { [weak self] command in
-            self?.runAuth(command)
-        }
+        guard codexReady, !auth.state.isWaiting else { return }
+        auth.starting()
+        rpc("account/login/start", ["type": "chatgptDeviceCode"]) { [weak self] result in self?.auth.login(result) }
     }
-
     func refreshCodexStatus() {
-        guard isRunning else { return }
-        auth.refresh { [weak self] command in
-            self?.runAuth(command)
-        }
-    }
-
-    /// Asks the guest's Codex CLI for a device code.
-    ///
-    /// This deliberately does not call a helper script installed inside the
-    /// guest. A guest created by an older build does not have that script, and
-    /// waiting for the next boot to install it is what made the settings button
-    /// useless on an already-installed machine.
-    private func runAuth(_ subcommand: String) {
-        let command = authShellCommand(subcommand)
-        // `-i` would run a login shell and then hand it the quoted command as a
-        // second shell line; on this image that nested quoting is easy to lose.
-        // A plain `-H bash -lc` runs the command directly as the codex user.
-        let agentScript = "sudo -u codex -H bash -lc \(ConsoleText.shellQuoted(command))"
-        auth.noteSent("auth \(subcommand)")
-        if provisioner.agentIsLive {
-            queueAuth(agentScript)
-            return
-        }
-        // The agent polls every couple of seconds, so "not live at this exact
-        // instant" is normal while the emulated guest is waking up. Queue the
-        // command as soon as it appears. Serial fallback was removed because it
-        // races the boot/login shell and corrupts both the terminal and auth.
-        append(diagnostic: "auth: 等待客户机代理")
-        let wait = subcommand == "start" ? 20 : 5
-        Task { [weak self] in
-            for _ in 0..<wait {
-                try? await Task.sleep(for: .seconds(1))
-                guard let self else { return }
-                if self.provisioner.agentIsLive {
-                    self.queueAuth(agentScript)
-                    return
-                }
-            }
-            guard let self else { return }
-            self.append(diagnostic: "auth: 客户机命令代理未就绪")
-            self.auth.fail("客户机命令代理未就绪，请确认系统已完全启动后重试")
-        }
-    }
-
-    /// The short shell line the guest runs. It is the same command a person
-    /// would type in the guest's terminal, so it does not depend on any helper
-    /// having been installed there first.
-    private func authShellCommand(_ subcommand: String) -> String {
-        let log = "/tmp/pocketvm-login.log"
-        // The guest's own proxy is what keeps OpenAI from seeing the iPad's
-        // blocked region. Older guests may not have the profile script, so the
-        // environment is set on the command itself rather than assumed.
-        let proxy = "if [ -r /etc/profile.d/pocketvm-proxy.sh ]; then . /etc/profile.d/pocketvm-proxy.sh; fi; "
-        if subcommand == "start" {
-            return proxy + "rm -f \(log); "
-                + "( if command -v setsid >/dev/null 2>&1; then "
-                + "exec setsid codex login --device-auth; else "
-                + "exec nohup codex login --device-auth; fi ) "
-                + ">\(log) 2>&1 </dev/null & "
-                + "sleep 5; timeout 10 codex login status 2>&1 || true; tail -n 40 \(log) 2>/dev/null"
-        }
-        return proxy + "timeout 10 codex login status 2>&1 || true; tail -n 40 \(log) 2>/dev/null"
-    }
-
-    private func queueAuth(_ script: String) {
-        guard !authRequestPending else { return }
-        authRequestPending = true
-        provisioner.runInGuest(script) { [weak self] output in
-            Task { @MainActor in
-                self?.authRequestPending = false
-                self?.ingestAuthOutput(output)
-            }
-        }
-    }
-
-    private func ingestAuthOutput(_ output: String) {
-        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
-            auth.ingest(line: String(line))
+        guard codexReady else { return }
+        rpc("account/read", ["refreshToken": false]) { [weak self] result in
+            self?.auth.account(result); self?.account = result; self?.pushAccount()
         }
     }
 
@@ -837,126 +667,10 @@ final class VMModel: ObservableObject {
         host.writeToConsole(data)
     }
 
-    private func ingestConsole(_ data: Data) {
-        consoleBuffer.append(data)
-        while let newline = consoleBuffer.firstIndex(of: 0x0A) {
-            let lineData = Data(consoleBuffer[consoleBuffer.startIndex..<newline])
-            consoleBuffer = Data(consoleBuffer[consoleBuffer.index(after: newline)...])
-            let line = ConsoleText.plain(String(decoding: lineData, as: UTF8.self))
-            provisioner.ingest(consoleLine: line)
-            noteModels(line: line)
-            noteBoot(line: line)
-        }
-        // A guest that never emits a newline must not grow this without bound.
-        if consoleBuffer.count > 256 * 1024 { consoleBuffer.removeAll() }
-    }
-
-    // MARK: - Boot
-
-    /// The one line the host types into the guest to find out whether the
-    /// machine can be used yet.
-    ///
-    /// There is no channel inside the guest to announce that its shell is up,
-    /// so the host asks: while the guest is still booting the text lands
-    /// nowhere, and once something is reading the console it answers. The guest
-    /// also carries a service that prints the same marker on later boots, so
-    /// this is the fallback rather than the only path.
-    private static let probeCommand =
-        "if command -v codex >/dev/null 2>&1; then echo POCKETVM_CODEX_READY; else echo POCKETVM_NO_CODEX; fi"
-
-    /// Follows the guest's own console so the gate can say where the machine is.
-    private func noteBoot(line: String) {
-        guard isRunning else { return }
-        // An exact line, not a substring: the probe the host types contains this
-        // same string, and the guest's console echoes what is typed. Matching a
-        // substring lifted the glass on the echo — milliseconds after the probe
-        // was sent, before the guest had answered anything.
-        // Trimmed of newlines as well as spaces: the guest's tty ends every line
-        // with CR LF, and `.whitespaces` leaves that CR behind, so an
-        // exactly-printed marker never compared equal — the machine sat at
-        // 正在启动 Codex CLI while its disk was being written the whole time.
-        if line.trimmingCharacters(in: .whitespacesAndNewlines) == "POCKETVM_CODEX_READY" {
-            // This legacy serial marker only says the executable exists. Keep
-            // the gate in the CLI-starting phase until the HTTP report confirms
-            // the process and authenticated app channel are alive.
-            if provisioner.isProvisioned {
-                bootDetail = "正在启动 Codex CLI"
-                pushProvisionState()
-            }
-            return
-        }
-        guard provisioner.isProvisioned, !codexReady else { return }
-
-        // The gate starts at 正在启动 QEMU; anything at all from the guest means
-        // the emulator is up and the guest is the thing booting now.
-        if bootDetail == "正在启动 QEMU" {
-            bootDetail = "正在引导系统"
-            pushProvisionState()
-        }
-
-        // A shell prompt is the one line that proves something is reading the
-        // console, so the probe is answered as soon as it is typed.
-        if line.contains("@pocketvm:") {
-            append(diagnostic: "shell prompt seen")
-            return
-        }
-        // Anything else only shortens the wait before the loop starts typing.
-        if bootDetail != "正在启动 Codex CLI", lineLooksLikeGuestBoot(line) {
-            if !probeArmed {
-                append(diagnostic: "guest boot output seen")
-                // The kernel is running, so the boot loader is behind us and
-                // there is nothing left to nudge.
-                bootNudgeTask?.cancel()
-                bootNudgeTask = nil
-            }
-            probeArmed = true
-        }
-    }
-
-    /// Presses Enter for the machine once it has had time to reach its boot
-    /// menu.
-    ///
-    /// Debian's GRUB stops at the menu instead of counting down when the last
-    /// shutdown was not clean, and a VM that was killed — by a reinstall, by
-    /// iOS, by the app being swiped away — is exactly that case. Nothing else
-    /// can press a key: the frontend shows the display without an input path,
-    /// so the machine would sit there for ever. Enter is harmless everywhere
-    /// else on the way up, and it stops as soon as the kernel has been heard.
-    private func startBootNudge() {
-        // Retained as a compatibility hook for older call sites. Boot input is
-        // always user initiated now; automatic carriage returns can corrupt a
-        // boot loader or an installer prompt.
-        bootNudgeTask?.cancel()
-        bootNudgeTask = nil
-    }
-
-    /// Lines the firmware and the boot loader do not print.
-    ///
-    /// The distribution's own name is deliberately not one of them: GRUB's menu
-    /// entry says "Debian GNU/Linux" long before the guest is running, which is
-    /// exactly how the probe used to end up typed at the boot menu and the gate
-    /// skipped straight from 正在启动 QEMU to 正在启动 Codex CLI.
-    private func lineLooksLikeGuestBoot(_ line: String) -> Bool {
-        line.contains("Linux version")
-            || line.contains("systemd[")
-            || line.contains("Reached target")
-            || line.contains("cloud-init")
-    }
-
-    private func sendProbe() {
-        // Legacy compatibility hook. Readiness is reported by the guest agent;
-        // never write a blind probe into the serial console.
-    }
-
     private func markCodexReady() {
         guard !codexReady else { return }
         codexReady = true
         bootDetail = ""
-        probeArmed = false
-        probeTask?.cancel()
-        probeTask = nil
-        bootNudgeTask?.cancel()
-        bootNudgeTask = nil
         append(diagnostic: "guest app-server initialized")
         refreshCodexStatus()
         pushProvisionState()
@@ -968,18 +682,6 @@ final class VMModel: ObservableObject {
             guard let self, self.isRunning, self.codexReady else { return }
             self.requestModels()
         }
-    }
-
-    /// A slow machine can take minutes to reach a prompt, and the boot menu
-    /// reads the serial line, so nothing is typed at it until the guest itself
-    /// has been heard from. Once it has, the retries are frequent; before that
-    /// they are slow enough to stay out of the boot's way.
-    private func startProbeLoop() {
-        // Kept as a lifecycle hook for older callers. The guest agent is the
-        // sole readiness authority; this method intentionally performs no
-        // serial writes.
-        probeTask?.cancel()
-        probeTask = nil
     }
 
     private func append(console text: String) {
@@ -1126,18 +828,7 @@ enum ConsoleText {
     /// `-c` overrides the guest's own configuration for this run only, which is
     /// exactly what the picker in the frontend promises: a model, a reasoning
     /// level, and optionally the faster service tier, for the next prompt.
-    static func execCommand(_ text: String, selection: ModelSelection, threadID: String? = nil) -> String {
-        var parts = ["codex", "exec"]
-        if threadID != nil { parts.append("resume") }
-        parts.append("--json --skip-git-repo-check")
-        if let model = selection.model { parts.append("--model \(shellQuoted(model))") }
-        if let effort = selection.effort { parts.append("-c model_reasoning_effort=\(shellQuoted(effort))") }
-        if selection.fast { parts.append("-c service_tier=fast") }
-        if let threadID { parts.append(shellQuoted(threadID)) }
-        parts.append("--")
-        parts.append(shellQuoted(text))
-        return parts.joined(separator: " ")
-    }
+
 }
 
 struct ContentView: View {

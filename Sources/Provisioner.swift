@@ -87,7 +87,7 @@ final class Provisioner: ObservableObject {
     let image = GuestImage.debianCloudARM64
     private let store = GuestImageStore()
     private var server: SeedServer?
-    private var lineBuffer = ""
+    let channel = CodexChannel()
     private var bootPairMarker: URL {
         VMConfiguration.documentsDirectory.appendingPathComponent("boot-pair.json")
     }
@@ -210,24 +210,14 @@ final class Provisioner: ObservableObject {
     }
 
     /// Feeds one line of guest console output through the state machine.
-    func ingest(consoleLine line: String) {
-        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if let message = trimmed.range(of: "POCKETVM:") {
-            let text = String(trimmed[message.upperBound...]).trimmingCharacters(in: .whitespaces)
-            if !text.isEmpty {
-                stage = .installing(text)
-                onLog?("guest: \(text)")
-            }
-            return
-        }
-        if trimmed.contains("POCKETVM_READY") {
-            markProvisioned()
-            return
-        }
-        if trimmed.contains("POCKETVM_FAILED") {
-            stage = .failed("客户机报告安装失败，可在终端里查看 /var/log/pocketvm-provision.log")
-            return
+    func installationEvent(_ data: Data) {
+        guard let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let phase = event["phase"] as? String else { return }
+        switch phase {
+        case "failed": stage = .failed(event["detail"] as? String ?? "安装失败")
+        case "progress": stage = .installing(event["detail"] as? String ?? "正在安装")
+        case "complete": markProvisioned()
+        default: break
         }
     }
 
@@ -424,8 +414,8 @@ final class Provisioner: ObservableObject {
     private func startHelperServer() throws -> SeedServer {
         var resources: [String: SeedServer.Resource] = [:]
         for name in [
-            "pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh",
-            "pocketvm-agent.sh", "pocketvm-auth", "setup-proxy.sh",
+            "pocketvm-relay.mjs", "pocketvm-report.sh", "pocketvm-boot.sh",
+            "setup-proxy.sh",
         ] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
@@ -455,6 +445,7 @@ final class Provisioner: ObservableObject {
         // current helpers as soon as its next start finds this datastore. That
         // is the only way to change anything inside a guest that is already
         // installed: there is no shell on the device to type into yet.
+        resources["/network-config"] = .yaml("version: 2\nethernets:\n  primary:\n    match:\n      name: \"en*\"\n    dhcp4: true\n")
         resources["/meta-data"] = .yaml(metadata())
         resources["/user-data"] = .yaml(userData())
         resources["/vendor-data"] = .text("#cloud-config\n")
@@ -471,100 +462,21 @@ final class Provisioner: ObservableObject {
         server.onRequest = { [weak self] line in self?.onLog?("guest: \(line)") }
         // The report is the guest talking, so it is logged as such rather than
         // as a seed fetch.
+        server.onExchange = { [weak self] data in self?.channel.exchange(data) }
         server.onPost = { [weak self] path, body in
             guard let self else { return false }
             if path == "/bootfiles" { return self.finishBootUpload(body) }
+            if path == "/installation" { self.installationEvent(body); return true }
             // The agent's answers are this side's business; everything else the
             // guest posts is a report for the app.
-            if path == "/result" {
-                self.handleCommandResult(body)
-                return true
-            }
             self.onGuestReport?(path, body)
             return true
         }
         server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) ?? false }
-        server.onDynamicResource = { [weak self] path in self?.dynamicResource(path) }
+
     }
 
-    // MARK: - Commands
-
-    /// Commands waiting to be collected, in the order they were asked for.
-    ///
-    /// A single slot lost the login: the eight-second status poll could replace
-    /// a `start` that the emulated guest had not collected yet, so the device
-    /// code was never requested at all. The queue keeps the start and lets the
-    /// polls wait behind it.
-    private var commandQueue: [(id: String, script: String)] = []
-    private var commandCallbacks: [String: (String) -> Void] = [:]
-    private var commandCounter = 0
-
-    func cancelCommands() {
-        let callbacks = Array(commandCallbacks.values)
-        commandCallbacks.removeAll()
-        commandQueue.removeAll()
-        agentLastSeen = .distantPast
-        for callback in callbacks { callback("客户机命令已取消") }
-    }
-    private static let commandLimit = 32
-    /// When the agent last came asking for work. A guest installed by an older
-    /// build has no agent, and the caller needs to know which of the two
-    /// channels to use.
-    private var agentLastSeen = Date.distantPast
-
-    var agentIsLive: Bool { Date().timeIntervalSince(agentLastSeen) < 12 }
-
-    /// Asks the guest to run a script, and hands the output to `callback`.
-    ///
-    /// The guest collects one at a time, so an answer can never be matched to
-    /// the wrong question; the queue in front of it makes sure a slow guest
-    /// does not lose the command that matters.
-    func runInGuest(_ script: String, callback: @escaping (String) -> Void) {
-        commandCounter += 1
-        let id = String(commandCounter)
-        // The status poll asks the same question every eight seconds. One copy
-        // in the queue is enough; the guest is slow, and stacking identical
-        // commands would only delay the start behind them.
-        if commandQueue.contains(where: { $0.script == script }) {
-            onLog?("coalesced a duplicate command for the guest (#\(id))")
-            callback("相同请求已在队列中")
-            return
-        }
-        commandQueue.append((id: id, script: script))
-        commandCallbacks[id] = callback
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(360))
-            guard let self, let expired = self.commandCallbacks.removeValue(forKey: id) else { return }
-            self.commandQueue.removeAll { $0.id == id }
-            expired("客户机命令超时，请查看客户机日志")
-        }
-        while commandQueue.count > Self.commandLimit {
-            let dropped = commandQueue.removeFirst()
-            commandCallbacks.removeValue(forKey: dropped.id)?("客户机队列已满，请重试")
-            onLog?("dropped stale command #\(dropped.id) for the guest")
-        }
-        onLog?("queued a command for the guest (#\(id), \(commandQueue.count) waiting)")
-    }
-
-    /// `/command`: the guest polling for work.
-    private func dynamicResource(_ path: String) -> SeedServer.Resource? {
-        guard path == "/command" else { return nil }
-        agentLastSeen = Date()
-        guard !commandQueue.isEmpty else { return .text("") }
-        let queued = commandQueue.removeFirst()
-        return .text("\(queued.id)\n\(queued.script)")
-    }
-
-    /// The guest's answer to a queued command.
-    private func handleCommandResult(_ body: Data) {
-        guard let text = String(data: body, encoding: .utf8) else { return }
-        let split = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let id = split.first.map(String.init) else { return }
-        let output = split.count > 1 ? String(split[1]) : ""
-        guard let callback = commandCallbacks.removeValue(forKey: id) else { return }
-        onLog?("guest answered command #\(id) with \(output.count) bytes")
-        callback(output)
-    }
+    func cancelCommands() { channel.reset() }
 
     /// The guest handing over the two files that let the next start boot its own
     /// kernel.
@@ -691,36 +603,9 @@ final class Provisioner: ObservableObject {
             permissions: '0755'
             content: |
         \(indent(provisionScript(), spaces: 6))
-          # /usr/local/bin, not /usr/local/sbin: the console logs in as `codex`,
-          # and a normal user's PATH does not include the sbin directories. The
-          # app types this command at that shell, so it has to be findable
-          # without one.
-          - path: /usr/local/bin/pocketvm-auth
-            permissions: '0755'
-            content: |
-        \(indent(authScript(), spaces: 6))
-          # Announcing readiness from inside the guest is what lets the frontend
-          # come forward on its own instead of being typed at. It is enabled
-          # rather than started here: on this first boot the CLI does not exist
-          # yet, and the provisioning script reports the same thing its own way.
-          - path: /etc/systemd/system/pocketvm-ready.service
-            permissions: '0644'
-            content: |
-              [Unit]
-              Description=PocketVM readiness marker
-              After=network-online.target
-
-              [Service]
-              Type=oneshot
-              RemainAfterExit=yes
-              ExecStart=/bin/sh -c 'command -v codex >/dev/null 2>&1 && echo POCKETVM_CODEX_READY > /dev/ttyAMA0 || true'
-
-              [Install]
-              WantedBy=multi-user.target
         runcmd:
           - systemctl daemon-reload
           - systemctl enable --now serial-getty@ttyAMA0.service
-          - systemctl enable pocketvm-ready.service
           - /usr/local/sbin/pocketvm-provision.sh
         """
     }
@@ -730,11 +615,6 @@ final class Provisioner: ObservableObject {
     /// The host app is the only terminal the user has, so the login has to run
     /// in the background with its output on disk, and the state has to come back
     /// as a couple of fixed lines rather than as a redrawn TUI.
-    private func authScript() -> String {
-        Self.bundledGuestFile("pocketvm-auth")
-            ?? "#!/bin/bash\necho POCKETVM_AUTH_STATE missing\n"
-    }
-
     /// Runs inside the guest on first boot.
     ///
     /// Every step is emulated aarch64, so the script is deliberately small and
@@ -748,7 +628,12 @@ final class Provisioner: ObservableObject {
         set -o pipefail
         TTY=/dev/ttyAMA0
         LOG=/var/log/pocketvm-provision.log
-        say() { printf 'POCKETVM: %s\\n' "$*" > "$TTY" 2>/dev/null || true; }
+        report_install() {
+          local payload
+          payload="$(printf '%s' "$2" | python3 -c 'import json,sys; print(json.dumps(dict(phase=sys.argv[1],detail=sys.stdin.read())))' "$1")" || return 1
+          curl --noproxy '*' -fsS --max-time 10 -H 'Content-Type: application/json' -d "$payload" http://10.0.2.2:8474/installation >/dev/null
+        }
+        say() { report_install progress "$*" || true; printf 'POCKETVM: %s\\n' "$*" > "$TTY" 2>/dev/null || true; }
 
         # The host grows the virtual disk while this boot is already starting,
         # which can land after the kernel first looked at it. Running this twice,
@@ -766,7 +651,7 @@ final class Provisioner: ObservableObject {
           say "根分区 $(df -h / | awk 'NR==2 {print $2}')"
         }
 
-        fail() { say "$*"; echo POCKETVM_FAILED >"$TTY"; exit 1; }
+        fail() { say "$*"; report_install failed "$*"; exit 1; }
         exec 9>/run/pocketvm-install.lock
         flock -n 9 || exit 0
         dpkg --configure -a >>"$LOG" 2>&1 || fail "恢复软件包配置失败"
@@ -839,10 +724,10 @@ final class Provisioner: ObservableObject {
           fi
           install -d /var/lib/pocketvm
           touch /var/lib/pocketvm/install-complete || fail "保存安装完成状态失败"
-          echo POCKETVM_READY >"$TTY"
+          report_install complete ""
         else
           say "安装未完成"
-          echo POCKETVM_FAILED >"$TTY"
+          report_install failed "安装未完成"
         fi
         """
     }

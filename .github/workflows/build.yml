@@ -31,7 +31,7 @@ jobs:
           node --test scripts/test-app-server.mjs
           node --check web/app.js
           node --check web/terminal.js
-          for script in guest/*.sh guest/pocketvm-auth; do bash -n "$script"; done
+          for script in guest/*.sh; do bash -n "$script"; done
 
       - name: Select Xcode
         run: |
@@ -50,6 +50,11 @@ jobs:
       # runtime-1. Rebuilding it is a deliberate choice, not a fallback, because
       # it costs roughly forty minutes of runner time and nothing about it
       # changes when the app does.
+      - name: Test host protocol channel
+        run: |
+          xcrun swiftc -parse-as-library Sources/CodexChannel.swift scripts/test-channel.swift -o "$RUNNER_TEMP/channel-tests"
+          "$RUNNER_TEMP/channel-tests"
+
       - name: Fetch prebuilt runtime
         if: ${{ !inputs.build_runtime }}
         run: |
