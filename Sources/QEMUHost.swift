@@ -290,7 +290,10 @@ final class QEMUHost {
     }
 
     private var screenPath: String {
-        documents().appendingPathComponent("screen.png").path
+        // The temporary directory, not Documents: a frame is written a second
+        // at a time, and the app's own file list is the user's, not a scratch
+        // pad for the emulator.
+        FileManager.default.temporaryDirectory.appendingPathComponent("pocketvm-screen.png").path
     }
 
     private func captureScreenFrame() {
