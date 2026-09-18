@@ -68,6 +68,16 @@ final class CodexAuth: ObservableObject {
         let text = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
+        // A shell that cannot find the script means the guest is not ready, or
+        // was installed by a build that put it somewhere this shell's PATH does
+        // not reach. Polling every eight seconds then only fills the console
+        // with the same line, so the poll stops and says so.
+        if text.contains("command not found") {
+            cancel()
+            state = .failed("客户机里没有找到登录脚本：等安装完成后再试一次")
+            return
+        }
+
         if text.contains("POCKETVM_AUTH_STATE logged_in") {
             state = .signedIn
             cancel()

@@ -516,7 +516,11 @@ final class Provisioner: ObservableObject {
             permissions: '0755'
             content: |
         \(indent(provisionScript(), spaces: 6))
-          - path: /usr/local/sbin/pocketvm-auth
+          # /usr/local/bin, not /usr/local/sbin: the console logs in as `codex`,
+          # and a normal user's PATH does not include the sbin directories. The
+          # app types this command at that shell, so it has to be findable
+          # without one.
+          - path: /usr/local/bin/pocketvm-auth
             permissions: '0755'
             content: |
         \(indent(authScript(), spaces: 6))

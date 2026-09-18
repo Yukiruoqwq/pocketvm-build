@@ -36,6 +36,14 @@ if fetch pocketvm-report.sh /usr/local/sbin/pocketvm-report; then
 fi
 fetch pocketvm-app.mjs "$LIB/pocketvm-app.mjs" || true
 
+# The sign-in helper is where the app can find it. cloud-init writes it to
+# /usr/local/sbin for a machine installed by this build's earlier versions, and
+# the console logs in as `codex`: a normal user's PATH has no sbin directories,
+# so a bare `pocketvm-auth` typed at that shell is "command not found".
+if [ -x /usr/local/sbin/pocketvm-auth ] && [ ! -e /usr/local/bin/pocketvm-auth ]; then
+  ln -sf /usr/local/sbin/pocketvm-auth /usr/local/bin/pocketvm-auth 2>/dev/null || true
+fi
+
 # The app boots this kernel directly, so the boot loader is normally not in the
 # path at all. It is still cleared here: a machine that was killed leaves GRUB's
 # recordfail set, and if anything ever boots through it again — an older build,
