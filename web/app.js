@@ -122,6 +122,9 @@ const state = {
   outputs: [],
   // 来源 — what the guest was built from.
   sources: [],
+  // The account behind the CLI inside the guest: its address and plan, as the
+  // guest's own app server reported them.
+  account: null,
   // 剩余额度 — whatever the guest's Codex account reported. Null means it has
   // not said anything yet, which is not the same as "no limits left".
   limits: SHOW_DEMO
@@ -561,6 +564,8 @@ function renderAccount() {
   const menuState = $("accountMenuState");
   menuState.textContent = label.textContent;
   menuState.classList.toggle("online", signedIn);
+  const account = state.account ?? {};
+  $("accountMenuName").textContent = account.email || account.account?.email || "PocketVM";
   renderUsage();
 }
 
@@ -735,8 +740,8 @@ function rowsFor(page) {
       },
       {
         label: "磁盘",
-        desc: `目标容量 ${provision.imageBytes} GiB`,
-        control: () => el("span", "value", `${cfg.drives.length} 个`),
+        desc: `目标容量 ${provision.imageBytes} GiB，系统盘之外可再加镜像`,
+        control: () => button("添加磁盘…", "btn", "pickDisk"),
       },
       {
         group: "操作",
@@ -770,8 +775,18 @@ function rowsFor(page) {
   if (page === "account") {
     const auth = state.auth;
     const model = selectedModel();
+    const running = state.provision.running;
+    const account = state.account ?? {};
+    const who = account.email || account.account?.email || "";
     const rows = [
       { group: "Codex" },
+      {
+        label: "账号",
+        // Straight from the guest's own app server, so it is the account the
+        // CLI inside this machine is actually using.
+        desc: who || "客户机内的 Codex 还没有报告账号",
+        control: () => el("span", "value", account.planType || account.account?.planType || "—"),
+      },
       {
         label: "登录状态",
         desc: auth.state === "signedIn" ? "客户机内的 Codex 已登录" : "客户机内的 Codex 未登录",
@@ -779,8 +794,13 @@ function rowsFor(page) {
       },
       {
         label: "登录",
-        desc: "设备代码会显示在这里，用浏览器确认即可",
-        control: () => button("登录 Codex", "btn-primary", "codexLogin"),
+        // The CLI runs inside the guest, so there is nothing to log in to until
+        // the guest is up. Saying so beats a button that does nothing.
+        desc: running ? "会在这里显示设备代码和确认链接" : "需要先启动虚拟机，登录是在客户机里完成的",
+        control: () =>
+          running
+            ? button("登录 Codex", "btn-primary", "codexLogin")
+            : button("启动虚拟机", "btn-primary", "start"),
       },
       {
         label: "模型",
@@ -790,13 +810,26 @@ function rowsFor(page) {
       },
     ];
     if (auth.state === "awaiting") {
-      rows.push({ label: "一次性代码", control: () => el("span", "value", auth.code) });
+      rows.push({
+        label: "一次性代码",
+        desc: "在能访问 auth.openai.com 的设备上打开下面的链接并输入它",
+        control: () => {
+          const copy = el("button", "btn", auth.code || "");
+          copy.addEventListener("click", () => bridge.send("copy", { text: auth.code }));
+          return copy;
+        },
+      });
       rows.push({
         label: "确认链接",
         control: () => {
-          const link = el("button", "btn", auth.url);
-          link.addEventListener("click", () => bridge.send("openURL", { url: auth.url }));
-          return link;
+          const wrap = el("div", "row-buttons");
+          const open = el("button", "btn", "在 iPad 打开");
+          open.addEventListener("click", () => bridge.send("openURL", { url: auth.url }));
+          const copy = el("button", "btn", "复制链接");
+          copy.addEventListener("click", () => bridge.send("copy", { text: `${auth.url}\n${auth.code ?? ""}` }));
+          wrap.appendChild(open);
+          wrap.appendChild(copy);
+          return wrap;
         },
       });
     }
@@ -1109,6 +1142,10 @@ window.pocketvmReceive = function (message) {
     case "limits":
       state.limits = message.payload || null;
       renderUsage();
+      break;
+    case "account":
+      state.account = message.payload || null;
+      renderAccount();
       break;
     case "threads":
       state.threads = message.payload?.threads ?? [];

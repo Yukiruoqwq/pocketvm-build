@@ -1,5 +1,6 @@
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 struct PocketVMApp: App {
@@ -46,10 +47,15 @@ final class VMModel: ObservableObject {
     /// account, so there is nothing truthful to show before that.
     @Published private(set) var models: [[String: Any]] = []
     private var modelsError: String?
+    /// One refresh per sign-in, not one per state push.
+    private var refreshedAfterSignIn = false
     /// The account's usage limits, exactly as the guest's own app server
     /// reported them. Nil until it has, and cached afterwards so the numbers
     /// survive a relaunch.
     @Published private(set) var usageLimits: [String: Any]?
+    /// What the account is: the address it belongs to and the plan behind it,
+    /// again exactly as the guest reported it.
+    @Published private(set) var account: [String: Any]?
     /// The conversation list, cached the same way: it is what lets the frontend
     /// show the last list it had while the guest is still booting.
     @Published private(set) var threads: [[String: Any]] = []
@@ -77,6 +83,9 @@ final class VMModel: ObservableObject {
     var pushToWeb: (([String: Any]) -> Void)?
     /// Installed by the view so the frontend can hand a URL to the system.
     var openURL: ((URL) -> Void)?
+    /// Set by the frontend to ask for the system's file picker; the view owns
+    /// presenting it, because a web view cannot.
+    @Published var wantsDiskPicker = false
 
     init() {
         host.onConsoleBytes = { [weak self] data in
@@ -173,6 +182,51 @@ final class VMModel: ObservableObject {
         pushConfiguration()
     }
 
+    /// Copies a disk image the user picked into the app's own documents and adds
+    /// it to the machine.
+    ///
+    /// The file comes from outside the sandbox, so it is copied rather than
+    /// referenced: the URL a picker hands back stops being usable when the
+    /// picker closes, and the emulator needs it on every boot.
+    func addDisk(from result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            appendStatus("没有选择磁盘：\(error.localizedDescription)")
+        case .success(let urls):
+            guard let source = urls.first else { return }
+            let scoped = source.startAccessingSecurityScopedResource()
+            defer { if scoped { source.stopAccessingSecurityScopedResource() } }
+            do {
+                let name = source.lastPathComponent
+                let destination = VMConfiguration.documentsDirectory.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.copyItem(at: source, to: destination)
+
+                var config = try VMConfiguration.loadOrCreateDefault()
+                config.drives.append(
+                    VMConfiguration.Drive(
+                        path: name,
+                        // Read-only virtio rather than USB: the USB path names a
+                        // single device id, so a second one would collide.
+                        interface: .virtio,
+                        readOnly: true,
+                        format: name.hasSuffix(".qcow2") ? "qcow2" : "raw"
+                    )
+                )
+                let validated = config.validated()
+                try validated.write()
+                configuration = validated
+                pushConfiguration()
+                pushProvisionState()
+                appendStatus("已把 \(name) 加进虚拟机；重启客户机后可用。")
+            } catch {
+                appendStatus("添加磁盘失败：\(error)")
+            }
+        }
+    }
+
     func appendStatus(_ text: String) {
         transcript.append(["role": "status", "text": text])
         pushMessages()
@@ -193,6 +247,7 @@ final class VMModel: ObservableObject {
 
     private static let limitsKey = "pocketvm.limits"
     private static let threadsKey = "pocketvm.threads"
+    private static let accountKey = "pocketvm.account"
 
     /// The last answers the guest gave. Read at launch so the frontend has
     /// something true to draw before the machine is even up; replaced the
@@ -206,11 +261,18 @@ final class VMModel: ObservableObject {
            let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             threads = list
         }
+        if let data = UserDefaults.standard.data(forKey: Self.accountKey),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            account = object
+        }
     }
 
     func pushAccount() {
         if let usageLimits {
             pushToWeb?(["action": "limits", "payload": usageLimits])
+        }
+        if let account {
+            pushToWeb?(["action": "account", "payload": account])
         }
         pushToWeb?(["action": "threads", "payload": ["threads": threads]])
     }
@@ -348,6 +410,15 @@ final class VMModel: ObservableObject {
             persist(list, key: Self.threadsKey)
             append(diagnostic: "guest reported \(list.count) conversation(s)")
             pushAccount()
+        }
+        if let account = object["account"] as? [String: Any] {
+            if let error = account["error"] as? String {
+                append(diagnostic: "account unavailable: \(error)")
+            } else {
+                self.account = account
+                persist(account, key: Self.accountKey)
+                pushAccount()
+            }
         }
     }
 
@@ -742,6 +813,12 @@ final class VMModel: ObservableObject {
             payload["reason"] = reason
         }
         pushToWeb?(["action": "authState", "payload": payload])
+        // Signing in changes what the account has, so the models, the limits and
+        // the conversation list are asked for again rather than left stale.
+        if case .signedIn = auth.state, !refreshedAfterSignIn {
+            refreshedAfterSignIn = true
+            requestModels()
+        }
     }
 
     func pushMessages() {
@@ -824,6 +901,14 @@ struct ContentView: View {
                 guard let scheme = url.scheme?.lowercased(), scheme == "https" else { return }
                 UIApplication.shared.open(url)
             }
+        }
+        // 添加磁盘: the picker belongs to the view, the file belongs to the model.
+        .fileImporter(
+            isPresented: $model.wantsDiskPicker,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            model.addDisk(from: result)
         }
         .sheet(isPresented: $showConsole) {
             ConsoleSheet(model: model, showDiagnostics: $showDiagnostics)

@@ -178,6 +178,18 @@ struct WebUIView: UIViewRepresentable {
                 model.pushAccount()
                 model.pushModels()
 
+            case "copy":
+                // The device-code login is completed on another device, so the
+                // code has to be able to leave the screen without being typed.
+                if let text = payload?["text"] as? String, !text.isEmpty {
+                    UIPasteboard.general.string = text
+                }
+
+            case "pickDisk":
+                // A disk image cannot be chosen from inside a web view; the
+                // frontend asks, the view presents the system picker.
+                model.wantsDiskPicker = true
+
             case "setAppearance":
                 // Validated rather than stored verbatim: the page is not the
                 // authority on what the setting may be.

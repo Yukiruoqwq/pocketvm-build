@@ -18,6 +18,7 @@ import { spawn } from "node:child_process";
 const METHODS = {
   models: "model/list",
   limits: "account/rateLimits/read",
+  account: "account/read",
   threads: "thread/list",
 };
 

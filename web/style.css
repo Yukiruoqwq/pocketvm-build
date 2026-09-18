@@ -715,6 +715,8 @@ ul { margin: 0; padding: 0; list-style: none; }
 .switch input:checked + span::after { transform: translateX(16px); }
 
 .value { font-size: var(--text-sm); color: var(--fg-dim); }
+/* Two controls on one settings row, e.g. open the link and copy it. */
+.row-buttons { display: flex; gap: 6px; }
 .btn {
   padding: 7px 14px; border-radius: var(--radius-sm);
   background: var(--bg-raised); border: 1px solid var(--border);
