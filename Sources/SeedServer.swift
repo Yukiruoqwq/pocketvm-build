@@ -47,7 +47,7 @@ final class SeedServer {
     /// actually reached the server.
     var onRequest: ((String) -> Void)?
     /// Called with the body of every POST: the guest reporting something.
-    var onPost: ((String, Data) -> Void)?
+    var onPost: ((String, Data) -> Bool)?
     /// Called with the body of every upload: a file the guest is handing over.
     var onUpload: ((String, Data) -> Bool)?
     /// Asked for a resource the guest requests that is not one of the fixed
@@ -222,7 +222,10 @@ final class SeedServer {
                 send(connection, status: "413 Payload Too Large", contentType: "text/plain", body: Data("report too large\n".utf8))
                 return
             }
-            DispatchQueue.main.async { self.onPost?(path, body) }
+            guard DispatchQueue.main.sync(execute: { self.onPost?(path, body) ?? false }) else {
+                send(connection, status: "500 Internal Server Error", contentType: "text/plain", body: Data("report rejected\n".utf8))
+                return
+            }
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
         }

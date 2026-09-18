@@ -34,12 +34,11 @@ upload_boot_files() {
   vmlinuz="/boot/vmlinuz-$kernel"
   initrd="/boot/initrd.img-$kernel"
   [ -f "$vmlinuz" ] && [ -f "$initrd" ] || return 1
-  upload_result=0
   # The proxy profile inside the guest is for the outside world; this is the
   # host on the other end of the emulated network.
   # No 100-continue: this listener answers once, when it has the whole body.
-  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$vmlinuz" "$BASE/upload/${batch}_vmlinuz" >/dev/null 2>&1 || return 0
-  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$initrd" "$BASE/upload/${batch}_initrd" >/dev/null 2>&1 || return 0
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$vmlinuz" "$BASE/upload/${batch}_vmlinuz" >/dev/null 2>&1 || return 1
+  curl -fsS -m 600 --noproxy '*' -H 'Expect:' -T "$initrd" "$BASE/upload/${batch}_initrd" >/dev/null 2>&1 || return 1
   install -d "$(dirname "$marker")" 2>/dev/null || true
   echo "$kernel" >"$marker"
   kernel_hash="$(sha256sum "$vmlinuz" | cut -d ' ' -f1)"
@@ -62,8 +61,8 @@ setup_proxy() {
   esac
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$url" ] && systemctl is-active --quiet mihomo; then return 0; fi
   script=/tmp/pocketvm-setup-proxy.sh
-  curl -fsS -m 60 --noproxy '*' "$BASE/setup-proxy.sh" -o "$script" 2>/dev/null || return 0
-  head -n1 "$script" | grep -q '^#!' || return 0
+  curl -fsS -m 60 --noproxy '*' "$BASE/setup-proxy.sh" -o "$script" 2>/dev/null || return 1
+  head -n1 "$script" | grep -q '^#!' || return 1
   bash "$script" "$url" >/tmp/pocketvm-proxy.log 2>&1
   if [ $? -eq 0 ]; then
     install -d "$(dirname "$marker")" 2>/dev/null || true
@@ -110,7 +109,7 @@ report() {
   # pocketvm-boot.sh sends this earlier in the boot, and this is the fallback for
   # a guest that has not picked that script up yet.
   post boot '{"stage":"booting"}'
-  command -v codex >/dev/null 2>&1 || return 0
+  command -v codex >/dev/null 2>&1 || return 1
   version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
   # The proxy must be ready before app-server is contacted. The service runs as
   # root, while the authenticated CLI state belongs to codex; querying as root

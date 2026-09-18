@@ -97,10 +97,10 @@ final class Provisioner: ObservableObject {
     func acknowledgeSystemBoot() {
         try? FileManager.default.removeItem(at: bootAttempt)
     }
-    func finishBootUpload(_ body: Data) {
+    func finishBootUpload(_ body: Data) -> Bool {
         do {
             guard let report = try JSONSerialization.jsonObject(with: body) as? [String: String],
-                  let batch = report["batch"], UUID(uuidString: batch) != nil else { return }
+                  let batch = report["batch"], UUID(uuidString: batch) != nil else { return false }
             var paths: [String: String] = [:]
             for name in ["vmlinuz", "initrd"] {
                 let path = "boot/" + batch + "/" + name
@@ -114,9 +114,11 @@ final class Provisioner: ObservableObject {
             }
             try JSONSerialization.data(withJSONObject: paths).write(to: bootPairMarker, options: .atomic)
             markProvisioned()
+            return state.completed
         } catch {
             stage = .failed("启动文件校验或保存失败：\(error)")
             onLog?("boot pair rejected: \(error)")
+            return false
         }
     }
     private func committedBootPaths() -> [String: String]? {
@@ -470,14 +472,16 @@ final class Provisioner: ObservableObject {
         // The report is the guest talking, so it is logged as such rather than
         // as a seed fetch.
         server.onPost = { [weak self] path, body in
-            guard let self else { return }
+            guard let self else { return false }
+            if path == "/bootfiles" { return self.finishBootUpload(body) }
             // The agent's answers are this side's business; everything else the
             // guest posts is a report for the app.
             if path == "/result" {
                 self.handleCommandResult(body)
-                return
+                return true
             }
             self.onGuestReport?(path, body)
+            return true
         }
         server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) ?? false }
         server.onDynamicResource = { [weak self] path in self?.dynamicResource(path) }

@@ -490,8 +490,6 @@ final class VMModel: ObservableObject {
             // The guest's own system is up and reachable. Everything left is
             // the CLI inside it, which is the step the gate name refers to.
             noteGuestSystemUp()
-        case "/bootfiles":
-            provisioner.finishBootUpload(body)
         case "/ready":
             guard isRunning else { return }
             markCodexReady()
