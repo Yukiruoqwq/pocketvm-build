@@ -50,6 +50,9 @@ final class SeedServer {
     var onPost: ((String, Data) -> Void)?
     /// Called with the body of every upload: a file the guest is handing over.
     var onUpload: ((String, Data) -> Void)?
+    /// Asked for a resource the guest requests that is not one of the fixed
+    /// ones: the command agent's queue answers differently every time.
+    var onDynamicResource: ((String) -> Resource?)?
 
     /// A request's body is held in memory while it arrives, and the kernel is
     /// the largest thing anyone sends. Uploads get room for one; everything
@@ -187,8 +190,10 @@ final class SeedServer {
         }
 
         let resource = resources[path]
+            ?? onDynamicResource?(path)
             ?? Resource(contentType: "text/plain; charset=utf-8", body: Data("not found\n".utf8))
-        let status = resources[path] == nil ? "404 Not Found" : "200 OK"
+        let known = resources[path] != nil || onDynamicResource?(path) != nil
+        let status = known ? "200 OK" : "404 Not Found"
         send(connection, status: status, contentType: resource.contentType, body: resource.body)
     }
 

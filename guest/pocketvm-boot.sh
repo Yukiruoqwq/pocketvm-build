@@ -35,6 +35,9 @@ if fetch pocketvm-report.sh /usr/local/sbin/pocketvm-report; then
   helpers=1
 fi
 fetch pocketvm-app.mjs "$LIB/pocketvm-app.mjs" || true
+if fetch pocketvm-agent.sh /usr/local/bin/pocketvm-agent; then
+  chmod 0755 /usr/local/bin/pocketvm-agent
+fi
 
 # The sign-in helper is where the app can find it. cloud-init writes it to
 # /usr/local/sbin for a machine installed by this build's earlier versions, and
@@ -100,6 +103,29 @@ EOF
     timeout 20 systemctl daemon-reload >/dev/null 2>&1 || true
   fi
   timeout 20 systemctl enable pocketvm-report.service >/dev/null 2>&1 || true
+
+  # The command agent: the app's way in that does not depend on a shell sitting
+  # at a prompt. It runs as root, which is what the sign-in helper needs.
+  AGENT=/etc/systemd/system/pocketvm-agent.service
+  if [ -x /usr/local/bin/pocketvm-agent ] && [ ! -f "$AGENT" ]; then
+    cat >"$AGENT" <<'EOF'
+[Unit]
+Description=PocketVM command agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pocketvm-agent
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    timeout 20 systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  timeout 20 systemctl enable pocketvm-agent.service >/dev/null 2>&1 || true
+  timeout 20 systemctl restart pocketvm-agent.service >/dev/null 2>&1 || true
 
   # What this run managed, so the host log answers "did the guest pick it up"
   # without anyone having to look at the screen.

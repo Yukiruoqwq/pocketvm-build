@@ -589,14 +589,48 @@ final class VMModel: ObservableObject {
         }
         appendStatus("正在向客户机请求设备代码…")
         auth.begin { [weak self] command in
-            self?.host.writeToConsole(command + "\n")
+            self?.runAuth(command)
         }
     }
 
     func refreshCodexStatus() {
         guard isRunning else { return }
         auth.refresh { [weak self] command in
-            self?.host.writeToConsole(command + "\n")
+            self?.runAuth(command)
+        }
+    }
+
+    /// Asks the guest's sign-in helper for something, over the channel that does
+    /// not depend on a shell.
+    ///
+    /// The helper lives in two different places depending on which build
+    /// installed the guest, and a login shell's PATH does not include either
+    /// sbin directory — which is exactly how "从设置里登录" used to end up as
+    /// `pocketvm-auth: command not found` on the terminal. Absolute paths, run
+    /// by the guest's agent, remove all three questions at once.
+    private func runAuth(_ subcommand: String) {
+        // As the codex user, in a login shell: the CLI keeps its credentials in
+        // that user's home, and the proxy it has to reach OpenAI through is set
+        // by a profile script. The agent runs as root, so both have to be said
+        // explicitly.
+        let script = "for p in /usr/local/bin/pocketvm-auth /usr/local/sbin/pocketvm-auth; do "
+            + "[ -x \"$p\" ] && exec sudo -u codex -H -i \"$p\" \(subcommand); done; "
+            + "echo POCKETVM_AUTH_STATE missing"
+        if provisioner.agentIsLive {
+            provisioner.runInGuest(script) { [weak self] output in
+                Task { @MainActor in self?.ingestAuthOutput(output) }
+            }
+            return
+        }
+        // No agent: a guest installed by an older build. The console is the only
+        // way in, and it is the way this used to be done.
+        append(diagnostic: "auth: 客户机还没有代理，改用串口")
+        host.writeToConsole("pocketvm-auth \(subcommand)\n")
+    }
+
+    private func ingestAuthOutput(_ output: String) {
+        for line in output.split(separator: "\n", omittingEmptySubsequences: false) {
+            auth.ingest(line: String(line))
         }
     }
 

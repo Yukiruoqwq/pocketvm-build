@@ -47,7 +47,7 @@ final class CodexAuth: ObservableObject {
         polls = 0
         log.removeAll()
         state = .starting
-        send("pocketvm-auth start")
+        send("start")
         schedulePoll()
     }
 
@@ -55,7 +55,7 @@ final class CodexAuth: ObservableObject {
     /// opens so the frontend can show whether the guest is already signed in.
     func refresh(send: @escaping (String) -> Void) {
         self.send = send
-        send("pocketvm-auth status")
+        send("status")
     }
 
     func cancel() {
@@ -111,7 +111,7 @@ final class CodexAuth: ObservableObject {
                     self.cancel()
                     return
                 }
-                self.send?("pocketvm-auth status")
+                self.send?("status")
             }
         }
     }

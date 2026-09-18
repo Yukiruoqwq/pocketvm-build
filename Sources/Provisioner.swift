@@ -337,7 +337,10 @@ final class Provisioner: ObservableObject {
     /// helper scripts from.
     private func startHelperServer() throws -> SeedServer {
         var resources: [String: SeedServer.Resource] = [:]
-        for name in ["pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh", "setup-proxy.sh"] {
+        for name in [
+            "pocketvm-app.mjs", "pocketvm-report.sh", "pocketvm-boot.sh",
+            "pocketvm-agent.sh", "setup-proxy.sh",
+        ] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
                 continue
@@ -385,8 +388,66 @@ final class Provisioner: ObservableObject {
         server.onRequest = { [weak self] line in self?.onLog?("guest: \(line)") }
         // The report is the guest talking, so it is logged as such rather than
         // as a seed fetch.
-        server.onPost = { [weak self] path, body in self?.onGuestReport?(path, body) }
+        server.onPost = { [weak self] path, body in
+            guard let self else { return }
+            // The agent's answers are this side's business; everything else the
+            // guest posts is a report for the app.
+            if path == "/result" {
+                self.handleCommandResult(body)
+                return
+            }
+            self.onGuestReport?(path, body)
+        }
         server.onUpload = { [weak self] name, body in self?.store(upload: name, body: body) }
+        server.onDynamicResource = { [weak self] path in self?.dynamicResource(path) }
+    }
+
+    // MARK: - Commands
+
+    /// The command waiting to be collected, and the answers still expected.
+    private var queuedCommand: (id: String, script: String)?
+    private var commandCallbacks: [String: (String) -> Void] = [:]
+    private var commandCounter = 0
+    /// When the agent last came asking for work. A guest installed by an older
+    /// build has no agent, and the caller needs to know which of the two
+    /// channels to use.
+    private var agentLastSeen = Date.distantPast
+
+    var agentIsLive: Bool { Date().timeIntervalSince(agentLastSeen) < 12 }
+
+    /// Asks the guest to run a script, and hands the output to `callback`.
+    ///
+    /// One at a time: the queue holds a single command so that an answer can
+    /// never be matched to the wrong question.
+    func runInGuest(_ script: String, callback: @escaping (String) -> Void) {
+        commandCounter += 1
+        let id = String(commandCounter)
+        // A command nobody collected is replaced rather than queued behind: the
+        // newest question is the one whose answer is still wanted.
+        if let old = queuedCommand { commandCallbacks.removeValue(forKey: old.id) }
+        queuedCommand = (id: id, script: script)
+        commandCallbacks[id] = callback
+        onLog?("queued a command for the guest (#\(commandCounter))")
+    }
+
+    /// `/command`: the guest polling for work.
+    private func dynamicResource(_ path: String) -> SeedServer.Resource? {
+        guard path == "/command" else { return nil }
+        agentLastSeen = Date()
+        guard let queued = queuedCommand else { return .text("") }
+        queuedCommand = nil
+        return .text("\(queued.id)\n\(queued.script)")
+    }
+
+    /// The guest's answer to a queued command.
+    private func handleCommandResult(_ body: Data) {
+        guard let text = String(data: body, encoding: .utf8) else { return }
+        let split = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let id = split.first.map(String.init) else { return }
+        let output = split.count > 1 ? String(split[1]) : ""
+        guard let callback = commandCallbacks.removeValue(forKey: id) else { return }
+        onLog?("guest answered command #\(id) with \(output.count) bytes")
+        callback(output)
     }
 
     /// The guest handing over the two files that let the next start boot its own
