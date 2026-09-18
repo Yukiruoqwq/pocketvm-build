@@ -256,6 +256,22 @@
       </button>
     </header>
     <div class="terminal-host" id="terminalHost"></div>
+    <!-- A console needs keys the iPad keyboard does not have: Esc, Tab, the
+         arrows, and above all Ctrl+C. Each button writes the byte a terminal
+         would send, so the guest sees exactly what its own keyboard would. -->
+    <div class="key-row" id="keyRow">
+      <button class="key" type="button" data-key="escape">esc</button>
+      <button class="key" type="button" data-key="tab">tab</button>
+      <button class="key" type="button" id="ctrlKey" data-key="ctrl" aria-pressed="false">ctrl</button>
+      <button class="key" type="button" data-key="ctrl-c">^C</button>
+      <button class="key" type="button" data-key="ctrl-d">^D</button>
+      <button class="key" type="button" data-key="ctrl-z">^Z</button>
+      <span class="key-spacer"></span>
+      <button class="key" type="button" data-key="arrow-left">←</button>
+      <button class="key" type="button" data-key="arrow-up">↑</button>
+      <button class="key" type="button" data-key="arrow-down">↓</button>
+      <button class="key" type="button" data-key="arrow-right">→</button>
+    </div>
   </section>
 </div>
 

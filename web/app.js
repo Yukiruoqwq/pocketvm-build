@@ -1180,7 +1180,8 @@ function wireChrome() {
     $("menuBottomPanel").checked = open;
     // The terminal is attached the first time it is actually visible: opened
     // while hidden it measures zero and draws nothing.
-    if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());
+  if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());
+    if (typeof wireKeyRow === "function") wireKeyRow();
   };
   $("toggleBottomPanel").addEventListener("click", () => setBottomPanel($("bottomPanel").hidden));
   $("closeBottomPanel").addEventListener("click", () => setBottomPanel(false));
@@ -1545,6 +1546,7 @@ function main() {
   wireComposer();
   wireChrome();
   ensureTerminal();
+  if (typeof wireKeyRow === "function") wireKeyRow();
   // Rotating the tablet changes whether the panel has a column of its own.
   window.addEventListener("resize", () => syncSidePanel());
 

@@ -65,6 +65,10 @@ final class VMModel: ObservableObject {
     private var consoleBuffer = Data()
     private var observers: [AnyCancellable] = []
     private var probeTask: Task<Void, Never>?
+    /// True from the moment stopping is asked for until the emulator has
+    /// actually exited. A start during that window is what used to crash the
+    /// app: QEMU cannot be initialised twice in one process.
+    private var stopping = false
     /// Set once the guest's own OS has been heard from, which is what makes
     /// typing at the console safe.
     private var probeArmed = false
@@ -92,7 +96,10 @@ final class VMModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.isRunning = false
+                self.stopping = false
                 self.status = "exited (\(status))"
+                self.codexReady = false
+                self.bootDetail = ""
                 self.probeTask?.cancel()
                 self.probeTask = nil
                 self.pushProvisionState()
@@ -393,7 +400,7 @@ final class VMModel: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        guard !isRunning else { return }
+        guard !isRunning, !stopping else { return }
         Task { await startPrepared() }
     }
 
@@ -421,21 +428,56 @@ final class VMModel: ObservableObject {
         pushProvisionState()
     }
 
+    /// Stops the machine by asking it to stop, and only reports it stopped once
+    /// the emulator's own thread has returned.
+    ///
+    /// The old version dropped everything on the floor immediately: it closed
+    /// the console socket, forgot the thread and left QEMU running inside the
+    /// app. Starting again then called `qemu_init` a second time, which QEMU
+    /// does not survive — that was the crash.
     func stop() {
-        host.stop()
-        isRunning = false
-        codexReady = false
-        bootDetail = ""
+        guard isRunning, !stopping else { return }
+        stopping = true
+        status = "stopping"
+        bootDetail = "正在关机"
+        appendStatus("正在请求客户机关机…")
         probeTask?.cancel()
         probeTask = nil
-        status = "stopped"
+        host.requestPowerDown()
         pushProvisionState()
+
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, self.isRunning, self.stopping else { return }
+            self.appendStatus("客户机没有自己关机，改为直接结束模拟器。")
+            self.host.requestQuit()
+            try? await Task.sleep(for: .seconds(8))
+            guard self.isRunning, self.stopping else { return }
+            // Better a machine that refuses to stop than one that takes the app
+            // down on the next start.
+            self.stopping = false
+            self.status = "running"
+            self.bootDetail = ""
+            self.appendStatus("模拟器没有退出。为了不让下一次启动把 App 弄崩，这里不强行清理；彻底退出 App 可以停掉它。")
+            self.pushProvisionState()
+        }
     }
 
+    /// Restarts by stopping first and waiting for the emulator to actually be
+    /// gone, because a second `qemu_init` while the first one is still in there
+    /// is the crash this whole path exists to avoid.
     func restart() {
-        host.stop()
-        isRunning = false
-        Task { await startPrepared() }
+        guard !stopping else { return }
+        stop()
+        Task { [weak self] in
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                if !self.isRunning { break }
+            }
+            guard let self, !self.isRunning else { return }
+            await self.startPrepared()
+        }
     }
 
     // MARK: - Codex sign-in
@@ -594,7 +636,10 @@ final class VMModel: ObservableObject {
             var attempts = 0
             while !Task.isCancelled {
                 let armed = self?.probeArmed ?? false
-                let wait: Duration = armed ? .seconds(10) : (attempts < 1 ? .seconds(120) : .seconds(60))
+                // The first blind attempt is early on purpose: the gate should
+                // not depend on the guest printing anything the host recognises,
+                // and the command is harmless if the shell is not there yet.
+                let wait: Duration = armed ? .seconds(10) : (attempts < 1 ? .seconds(45) : .seconds(60))
                 try? await Task.sleep(for: wait)
                 guard let self, self.isRunning, !self.codexReady else { return }
                 attempts += 1
@@ -637,6 +682,7 @@ final class VMModel: ObservableObject {
             "outputs": outputs,
             "password": provisioner.state.password,
             "running": isRunning,
+            "stopping": stopping,
             "codexReady": codexReady,
             "detail": bootDetail,
             "cpuCount": configuration?.cpuCount ?? 0,

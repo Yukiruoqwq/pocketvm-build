@@ -602,6 +602,29 @@ ul { margin: 0; padding: 0; list-style: none; }
 .terminal-host .xterm { height: 100%; }
 .terminal-host .xterm-viewport { background: #0d0d0d !important; }
 
+/* The keys a tablet keyboard does not have. Always on screen while the console
+   is open, because the moment you need Ctrl+C is not the moment to go looking
+   for it. */
+.key-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 8px;
+  overflow-x: auto;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-app);
+  -webkit-overflow-scrolling: touch;
+}
+.key {
+  flex: none; min-width: 38px; height: 28px; padding: 0 9px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg-raised); color: var(--fg-dim);
+  font-size: var(--text-sm); line-height: 1;
+}
+.key:active { background: var(--bg-active); color: var(--fg); }
+.key[aria-pressed="true"] {
+  background: var(--fg); border-color: var(--fg); color: var(--bg-app);
+}
+.key-spacer { flex: 1 0 12px; }
+
 /* -------------------------------------------------------------- settings */
 
 .settings {

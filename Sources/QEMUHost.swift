@@ -39,6 +39,7 @@ final class QEMUHost {
         case symbolMissing(String)
         case imageMissing(String)
         case alreadyRunning
+        case emulatorBusy
         case blockDevice(String)
 
         var description: String {
@@ -53,6 +54,8 @@ final class QEMUHost {
                 return "Disk image not found at \(p)"
             case .alreadyRunning:
                 return "A virtual machine is already running."
+            case .emulatorBusy:
+                return "上一台模拟器还没有退出（正在关机或卡住了），等它结束再启动。"
             case .blockDevice(let reason):
                 return "无法打开磁盘：\(reason)"
             }
@@ -82,6 +85,16 @@ final class QEMUHost {
     private var qemuThread: Thread?
     private var libraryHandle: UnsafeMutableRawPointer?
     private var isRunning = false
+    /// False while a previous emulator thread is still inside QEMU.
+    ///
+    /// QEMU cannot be initialised twice in one process: the second `qemu_init`
+    /// walks over the first one's state and takes the app down with it. So a
+    /// start is refused until the previous thread has actually returned, and
+    /// stopping means asking the emulator to exit rather than dropping our end
+    /// of its console and pretending.
+    private var emulatorFinished = true
+    private var loggedConsoleRead = false
+    private var loggedConsoleWrite = false
 
     var running: Bool { isRunning }
 
@@ -110,6 +123,7 @@ final class QEMUHost {
 
     func start(configuration: VMConfiguration, profile: BootProfile = BootProfile()) throws {
         guard !isRunning else { throw HostError.alreadyRunning }
+        guard emulatorFinished else { throw HostError.emulatorBusy }
         let config = configuration.validated()
 
         // Refuse early rather than run a translator that cannot emit code.
@@ -123,23 +137,17 @@ final class QEMUHost {
         let console = try makeSerialConsole()
         serialHostFd = console.hostFd
 
-        // The monitor is only wired up when something has to be done to the
-        // machine before the guest gets hold of it. A failed conversation is
-        // survivable: the resize is retried on the next boot, and the guest
-        // grows its own filesystem from the script cloud-init runs.
-        var qmp: (hostFd: Int32, guestFd: Int32)?
-        if profile.resize != nil {
-            qmp = try makeSerialConsole()
-            qmpHostFd = qmp?.hostFd ?? -1
-        }
+        // The monitor is wired up for every boot, not only when the disk has to
+        // be grown: it is also the only way to ask the emulator to exit, which
+        // is what makes a second start possible at all.
+        let qmp = try makeSerialConsole()
+        qmpHostFd = qmp.hostFd
 
         func closeSockets() {
             close(console.hostFd)
             close(console.guestFd)
-            if let qmp {
-                close(qmp.hostFd)
-                close(qmp.guestFd)
-            }
+            close(qmp.hostFd)
+            close(qmp.guestFd)
             serialHostFd = -1
             qmpHostFd = -1
         }
@@ -150,7 +158,7 @@ final class QEMUHost {
                 config: config,
                 profile: profile,
                 qemuSerialFd: console.guestFd,
-                qmpFd: qmp?.guestFd ?? -1
+                qmpFd: qmp.guestFd
             )
         } catch {
             closeSockets()
@@ -188,14 +196,8 @@ final class QEMUHost {
             let status = QEMUHost.runQEMU(
                 argv: argv,
                 onInitialized: { [weak self] in
-                    // Explicit `self` even after unwrapping: the shorthand does
-                    // not extend into the same guard's other conditions.
-                    guard let self, let resize = profile.resize, self.qmpHostFd >= 0 else { return }
-                    QEMUHost.growDisk(
-                        fd: self.qmpHostFd,
-                        node: resize.node,
-                        sizeGiB: resize.sizeGiB
-                    ) { line in
+                    guard let self, self.qmpHostFd >= 0 else { return }
+                    QEMUHost.growDisk(fd: self.qmpHostFd, resize: profile.resize) { line in
                         DispatchQueue.main.async { self.log(line) }
                     }
                 },
@@ -206,6 +208,7 @@ final class QEMUHost {
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.log("qemu exited with status \(status)")
+                self.emulatorFinished = true
                 self.teardown()
                 self.onExit?(status)
             }
@@ -213,16 +216,25 @@ final class QEMUHost {
         thread.name = "qemu-system-\(architecture)"
         thread.stackSize = 4 << 20
         qemuThread = thread
+        emulatorFinished = false
         thread.start()
     }
 
-    func stop() {
+    /// Asks the guest to shut down through ACPI: systemd inside the guest does
+    /// the rest, and QEMU exits its main loop when the machine goes down.
+    func requestPowerDown() {
         guard isRunning else { return }
-        log("stopping by terminating the emulator thread")
-        // QEMU is driven by SIGTERM delivered to the process; the loop returns
-        // and the cleanup path above runs. A graceful guest shutdown is
-        // preferred and is the caller's responsibility.
-        teardown()
+        log("asking the guest to power down")
+        QEMUHost.sendMonitor(fd: qmpHostFd, command: "{\"execute\":\"system_powerdown\"}\n")
+    }
+
+    /// Asks the emulator itself to exit. This is the blunt one: the guest gets no
+    /// chance to unmount anything, which is why it is only used after a power
+    /// down request has been ignored.
+    func requestQuit() {
+        guard isRunning else { return }
+        log("asking the emulator to quit")
+        QEMUHost.sendMonitor(fd: qmpHostFd, command: "{\"execute\":\"quit\"}\n")
     }
 
     private func teardown() {
@@ -269,6 +281,10 @@ final class QEMUHost {
     /// Write raw bytes to the guest's serial line, bypassing any encoding.
     func writeToConsole(_ data: Data) {
         guard serialHostFd >= 0, !data.isEmpty else { return }
+        if !loggedConsoleWrite {
+            loggedConsoleWrite = true
+            log("console: first write of \(data.count) bytes to the guest")
+        }
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
             _ = Darwin.write(serialHostFd, base, raw.count)
@@ -282,6 +298,10 @@ final class QEMUHost {
             var buffer = [UInt8](repeating: 0, count: 8192)
             let count = read(fd, &buffer, buffer.count)
             guard count > 0 else { return }
+            if !loggedConsoleRead {
+                loggedConsoleRead = true
+                log("console: first read of \(count) bytes from the guest")
+            }
             let slice = buffer[0..<count]
             self.onConsoleBytes?(Data(slice))
             let text = String(decoding: slice, as: UTF8.self)
@@ -471,53 +491,69 @@ final class QEMUHost {
     ///
     /// Failures are not fatal. If the resize does not land in time, the guest's
     /// own provisioning script grows the filesystem on the next boot instead.
+    /// Brings the monitor up: reads its greeting, negotiates capabilities, and
+    /// grows the disk when this boot asked for it.
+    ///
+    /// Capabilities matter beyond the resize — the command that stops the
+    /// machine is refused until they are negotiated, and stopping through the
+    /// monitor is the only way a later start can work at all.
+    ///
+    /// Failures are logged rather than thrown: a resize that does not land is
+    /// retried by the guest's own provisioning script, and a machine that cannot
+    /// be asked to stop is left running instead of being crashed by a second
+    /// `qemu_init`.
     private static func growDisk(
         fd: Int32,
-        node: String,
-        sizeGiB: Int,
+        resize: BootProfile.Resize?,
         log: @escaping (String) -> Void
     ) {
         DispatchQueue.global(qos: .utility).async {
-            log("qmp: 等待模拟器问候")
-            let greetingDeadline = Date().addingTimeInterval(10)
-            var greeting = Data()
-            while Date() < greetingDeadline, !greeting.contains(0x0A) {
-                if let chunk = readAvailable(fd: fd, timeoutMilliseconds: 400) {
-                    greeting.append(chunk)
-                }
+            guard let greeting = readMonitorLine(fd: fd, timeout: 10) else {
+                log("qmp: 模拟器没有问候")
+                return
             }
-            if let text = String(data: greeting, encoding: .utf8), !text.isEmpty {
-                log("qmp: \(text.trimmingCharacters(in: .whitespacesAndNewlines))")
-            }
+            log("qmp: \(greeting)")
 
-            let bytes = Int64(sizeGiB) * 1_073_741_824
-            let commands = [
-                "{\"execute\":\"qmp_capabilities\"}",
-                // `node-name` addresses the block node the drive declared.
-                // The older `device` spelling only finds a name that a
-                // BlockBackend owns, which a `-blockdev` node is not.
-                "{\"execute\":\"block_resize\",\"arguments\":{\"node-name\":\"\(node)\",\"size\":\(bytes)}}",
-            ].joined(separator: "\n") + "\n"
-            writeAll(fd: fd, data: Data(commands.utf8))
+            sendMonitor(fd: fd, command: "{\"execute\":\"qmp_capabilities\"}\n")
+            if let reply = readMonitorLine(fd: fd, timeout: 5) { log("qmp: \(reply)") }
 
-            // The answers are logged rather than checked: an error here is
-            // reported to the user through the same log they can open, and the
-            // guest's script is the backstop.
-            let responseDeadline = Date().addingTimeInterval(30)
-            var buffer = Data()
-            while Date() < responseDeadline {
-                guard let chunk = readAvailable(fd: fd, timeoutMilliseconds: 400) else { continue }
-                buffer.append(chunk)
-                while let newline = buffer.firstIndex(of: 0x0A) {
-                    let line = Data(buffer[buffer.startIndex..<newline])
-                    buffer = Data(buffer[buffer.index(after: newline)...])
-                    if let text = String(data: line, encoding: .utf8), !text.isEmpty {
-                        log("qmp: \(text)")
-                    }
-                }
-            }
-            log("qmp: 对话结束")
+            guard let resize else { return }
+            let bytes = Int64(resize.sizeGiB) * 1_073_741_824
+            // `node-name` addresses the block node the drive declared. The older
+            // `device` spelling only finds a name that a BlockBackend owns, which
+            // a `-blockdev` node is not.
+            sendMonitor(
+                fd: fd,
+                command: "{\"execute\":\"block_resize\",\"arguments\":{\"node-name\":\"\(resize.node)\",\"size\":\(bytes)}}\n"
+            )
+            if let reply = readMonitorLine(fd: fd, timeout: 30) { log("qmp: \(reply)") }
         }
+    }
+
+    /// One complete line from the monitor, or nil once the timeout passes.
+    private static func readMonitorLine(fd: Int32, timeout: TimeInterval) -> String? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var buffer = Data()
+        while Date() < deadline {
+            if let chunk = readAvailable(fd: fd, timeoutMilliseconds: 400) {
+                buffer.append(chunk)
+            }
+            while let newline = buffer.firstIndex(of: 0x0A) {
+                let line = Data(buffer[buffer.startIndex..<newline])
+                buffer = Data(buffer[buffer.index(after: newline)...])
+                let text = String(decoding: line, as: UTF8.self)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { return text }
+            }
+        }
+        return nil
+    }
+
+    /// One monitor command. The monitor is a text protocol on a socket pair the
+    /// app owns, so a write that fails is a missing stop, not a crash.
+    static func sendMonitor(fd: Int32, command: String) {
+        guard fd >= 0 else { return }
+        writeAll(fd: fd, data: Data(command.utf8))
     }
 
     private static func readAvailable(fd: Int32, timeoutMilliseconds: Int32) -> Data? {

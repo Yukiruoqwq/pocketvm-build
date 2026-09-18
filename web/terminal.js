@@ -26,6 +26,25 @@ let pending = [];
 let pendingBytes = 0;
 const PENDING_LIMIT = 4 * 1024 * 1024;
 
+/// The bytes a terminal sends for keys the iPad keyboard does not have.
+const KEY_BYTES = {
+  escape: "\x1b",
+  tab: "\t",
+  "shift-tab": "\x1b[Z",
+  "ctrl-c": "\x03",
+  "ctrl-d": "\x04",
+  "ctrl-z": "\x1a",
+  "ctrl-l": "\x0c",
+  "arrow-up": "\x1b[A",
+  "arrow-down": "\x1b[B",
+  "arrow-right": "\x1b[C",
+  "arrow-left": "\x1b[D",
+};
+
+/// Ctrl held for the next key, the way a real keyboard chord works: press ctrl,
+/// then a letter, and the guest sees that letter's control code.
+let ctrlLatched = false;
+
 function base64ToBytes(b64) {
   const binary = atob(b64);
   const bytes = new Uint8Array(binary.length);
@@ -38,6 +57,50 @@ function bytesToBase64(text) {
   let binary = "";
   for (const b of bytes) binary += String.fromCharCode(b);
   return btoa(binary);
+}
+
+/// Applies a latched Ctrl to the next printable key, and to nothing else.
+function applyCtrl(data) {
+  if (!ctrlLatched || data.length !== 1) return data;
+  const code = data.toLowerCase().charCodeAt(0);
+  if (code < 97 || code > 122) return data;
+  ctrlLatched = false;
+  updateCtrlKey();
+  return String.fromCharCode(code - 96);
+}
+
+function updateCtrlKey() {
+  const button = document.getElementById("ctrlKey");
+  if (button) button.setAttribute("aria-pressed", ctrlLatched ? "true" : "false");
+}
+
+/// One of the extra keys: a fixed byte sequence, or the Ctrl latch.
+function sendKey(name) {
+  if (name === "ctrl") {
+    ctrlLatched = !ctrlLatched;
+    updateCtrlKey();
+    return;
+  }
+  const data = KEY_BYTES[name];
+  if (data === undefined) return;
+  // A chord button is a complete keystroke, so it clears a pending Ctrl.
+  if (ctrlLatched) {
+    ctrlLatched = false;
+    updateCtrlKey();
+  }
+  termBridge.send("terminalInput", { data: bytesToBase64(data) });
+}
+
+function wireKeyRow() {
+  if (wireKeyRow.done) return;
+  wireKeyRow.done = true;
+  const row = document.getElementById("keyRow");
+  if (!row) return;
+  row.addEventListener("click", (event) => {
+    const key = event.target.closest(".key");
+    if (key) sendKey(key.dataset.key);
+  });
+  updateCtrlKey();
 }
 
 /// Builds the emulator. It is not attached to the page here: a terminal opened
@@ -74,7 +137,7 @@ function ensureTerminal() {
 
   // Keystrokes go to the guest as raw bytes.
   term.onData((data) => {
-    termBridge.send("terminalInput", { data: bytesToBase64(data) });
+    termBridge.send("terminalInput", { data: bytesToBase64(applyCtrl(data)) });
   });
 
   return term;
