@@ -163,7 +163,8 @@ function openTerminal() {
     if (!host.dataset.failed) {
       host.dataset.failed = "1";
       host.textContent = `终端不可用：${error}`;
-      setTerminalState("不可用");
+      pageError = `终端不可用：${error}`;
+      refreshTerminalState();
       termBridge.send("note", { text: `终端不可用：${error}` });
     }
     return null;
@@ -185,7 +186,7 @@ function mountTerminal(host) {
         rows: terminal.rows,
         pending: pending.length,
       });
-      setTerminalState("已连接");
+      refreshTerminalState();
     } else {
       // Browser preview: something to look at so the emulator itself can be
       // checked.
@@ -198,6 +199,19 @@ function mountTerminal(host) {
       if (fitAddon) fitAddon.fit();
       terminal.refresh(0, terminal.rows - 1);
     });
+    // The panel is shown, then the emulator is opened. On a layout that has not
+    // settled the first measurement can still be zero rows — which draws
+    // nothing at all and looks exactly like a console with no output. Measuring
+    // again once the frame is up costs nothing.
+    window.setTimeout(() => {
+      try {
+        if (fitAddon) fitAddon.fit();
+        terminal.refresh(0, Math.max(0, terminal.rows - 1));
+      } catch (error) {
+        pageError = `终端尺寸测量失败：${error}`;
+      }
+      refreshTerminalState();
+    }, 250);
   }
 
   for (const chunk of pending) terminal.write(chunk);
@@ -205,6 +219,7 @@ function mountTerminal(host) {
   pendingBytes = 0;
   if (fitAddon) fitAddon.fit();
   terminal.refresh(0, terminal.rows - 1);
+  refreshTerminalState();
   return terminal;
 }
 
@@ -213,15 +228,18 @@ function terminalReceive(payload) {
   if (!payload) return;
   if (typeof payload.base64 !== "string") return;
   const bytes = base64ToBytes(payload.base64);
+  receivedBytes += bytes.length;
   if (!opened) {
     // Keep the tail until somebody opens the panel.
     pending.push(bytes);
     pendingBytes += bytes.length;
+    refreshTerminalState();
     while (pendingBytes > PENDING_LIMIT && pending.length > 1) {
       pendingBytes -= pending.shift().length;
     }
     return;
   }
+  refreshTerminalState();
   if (!loggedFirstWrite) {
     loggedFirstWrite = true;
     termBridge.send("note", {
@@ -234,6 +252,8 @@ function terminalReceive(payload) {
 // Anything the page throws is otherwise invisible from the host: the panel just
 // stays blank and there is nothing to read afterwards.
 window.addEventListener("error", (event) => {
+  pageError = `页面错误：${event.message}`;
+  refreshTerminalState();
   termBridge.send("note", {
     text: `page error ${event.message} @ ${event.filename}:${event.lineno}`,
   });
@@ -245,4 +265,38 @@ window.addEventListener("unhandledrejection", (event) => {
 function setTerminalState(text) {
   const el = document.getElementById("terminalState");
   if (el) el.textContent = text;
+}
+
+/// Everything the console can say about itself, on one line.
+///
+/// It is the only place the *page* can be asked a question the host cannot
+/// answer from outside: whether the bytes arrived and were drawn, or never
+/// arrived at all. Two numbers do that — bytes received, and the size the
+/// emulator was given.
+let receivedBytes = 0;
+let pageError = "";
+
+function formatBytes(count) {
+  if (count < 1024) return `${count} 字节`;
+  if (count < 1024 * 1024) return `${(count / 1024).toFixed(1)} KB`;
+  return `${(count / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function refreshTerminalState() {
+  const el = document.getElementById("terminalState");
+  if (!el) return;
+  if (pageError) {
+    el.textContent = pageError;
+    return;
+  }
+  if (!opened) {
+    el.textContent = receivedBytes ? `未连接 · 已缓存 ${formatBytes(receivedBytes)}` : "未连接";
+    return;
+  }
+  const size = term ? `${term.cols}×${term.rows}` : "?";
+  if (term && term.rows < 2) {
+    el.textContent = `终端尺寸为 0（${size}）· 收到 ${formatBytes(receivedBytes)}`;
+    return;
+  }
+  el.textContent = `已连接 ${size} · 收到 ${formatBytes(receivedBytes)}`;
 }

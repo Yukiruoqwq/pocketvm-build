@@ -587,6 +587,11 @@ ul { margin: 0; padding: 0; list-style: none; }
   padding: 4px 8px; border-bottom: 1px solid var(--border-soft);
 }
 .bottom-head .icon-btn { margin-left: auto; }
+.terminal-state {
+  margin-left: auto; margin-right: 8px;
+  color: var(--fg-faint); font-size: var(--text-xs);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .tab-item {
   padding: 4px 8px; border-radius: var(--radius-sm);
   font-size: var(--text-sm); color: var(--fg-dim);

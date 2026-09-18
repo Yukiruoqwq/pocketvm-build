@@ -232,6 +232,11 @@
   <section class="bottom-panel" id="bottomPanel" hidden>
     <header class="bottom-head">
       <button class="tab-item active" type="button">终端</button>
+      <!-- What the console itself knows: connected or not, how many bytes the
+           page has received, and what size the emulator was given. A blank
+           panel with "收到 45 KB" on it is a rendering problem; a blank panel
+           with "收到 0 字节" is a console that never arrived. -->
+      <span class="terminal-state" id="terminalState">未连接</span>
       <button class="icon-btn" type="button" id="closeBottomPanel" title="隐藏底部面板">
         <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
