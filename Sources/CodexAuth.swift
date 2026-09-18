@@ -86,6 +86,17 @@ final class CodexAuth: ObservableObject {
         if text.contains("POCKETVM_AUTH_STATE not_logged_in") || text.contains("POCKETVM_AUTH_STATE unknown") {
             if !state.isWaiting { state = .signedOut }
         }
+        // The direct CLI prints ordinary prose rather than a marker. Read both
+        // forms because the app now sends the command itself instead of relying
+        // on the helper that an older guest may not have.
+        let lower = text.lowercased()
+        if lower.contains("not logged in") {
+            if !state.isWaiting { state = .signedOut }
+        } else if lower.contains("logged in") {
+            state = .signedIn
+            cancel()
+            return
+        }
 
         if let url = CodexAuth.firstURL(in: text), pendingURL == nil {
             pendingURL = url

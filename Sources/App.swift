@@ -612,24 +612,17 @@ final class VMModel: ObservableObject {
         }
     }
 
-    /// Asks the guest's sign-in helper for something, over the channel that does
-    /// not depend on a shell.
+    /// Asks the guest's Codex CLI for a device code.
     ///
-    /// The helper lives in two different places depending on which build
-    /// installed the guest, and a login shell's PATH does not include either
-    /// sbin directory — which is exactly how "从设置里登录" used to end up as
-    /// `pocketvm-auth: command not found` on the terminal. Absolute paths, run
-    /// by the guest's agent, remove all three questions at once.
+    /// This deliberately does not call a helper script installed inside the
+    /// guest. A guest created by an older build does not have that script, and
+    /// waiting for the next boot to install it is what made the settings button
+    /// useless on an already-installed machine.
     private func runAuth(_ subcommand: String) {
-        // As the codex user, in a login shell: the CLI keeps its credentials in
-        // that user's home, and the proxy it has to reach OpenAI through is set
-        // by a profile script. The agent runs as root, so both have to be said
-        // explicitly.
-        let script = "for p in /usr/local/bin/pocketvm-auth /usr/local/sbin/pocketvm-auth; do "
-            + "[ -x \"$p\" ] && exec sudo -u codex -H -i \"$p\" \(subcommand); done; "
-            + "echo POCKETVM_AUTH_STATE missing"
+        let command = authShellCommand(subcommand)
+        let agentScript = "sudo -u codex -H -i bash -lc \(ConsoleText.shellQuoted(command))"
         if provisioner.agentIsLive {
-            queueAuth(script)
+            queueAuth(agentScript)
             return
         }
         // The agent polls every couple of seconds, so "not live at this exact
@@ -642,7 +635,7 @@ final class VMModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(1))
                 guard let self else { return }
                 if self.provisioner.agentIsLive {
-                    self.queueAuth(script)
+                    self.queueAuth(agentScript)
                     return
                 }
             }
@@ -652,8 +645,24 @@ final class VMModel: ObservableObject {
                 return
             }
             self.append(diagnostic: "auth: 20 秒内没有代理，改用串口")
-            self.host.writeToConsole("pocketvm-auth start\n")
+            self.host.writeToConsole(command + "\n")
         }
+    }
+
+    /// The short shell line the guest runs. It is the same command a person
+    /// would type in the guest's terminal, so it does not depend on any helper
+    /// having been installed there first.
+    private func authShellCommand(_ subcommand: String) -> String {
+        let log = "/tmp/pocketvm-login.log"
+        if subcommand == "start" {
+            return "rm -f \(log); "
+                + "( if command -v setsid >/dev/null 2>&1; then "
+                + "exec setsid codex login --device-auth; else "
+                + "exec nohup codex login --device-auth; fi ) "
+                + ">\(log) 2>&1 </dev/null & "
+                + "sleep 5; codex login status 2>/dev/null; tail -n 40 \(log) 2>/dev/null"
+        }
+        return "codex login status 2>/dev/null; tail -n 40 \(log) 2>/dev/null"
     }
 
     private func queueAuth(_ script: String) {
