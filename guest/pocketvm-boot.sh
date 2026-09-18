@@ -36,6 +36,20 @@ if fetch pocketvm-report.sh /usr/local/sbin/pocketvm-report; then
 fi
 fetch pocketvm-app.mjs "$LIB/pocketvm-app.mjs" || true
 
+# A machine that was killed leaves GRUB's recordfail set, and Debian's boot
+# loader then stops at its menu and waits for a key nothing on this device can
+# press. Three seconds is long enough to pick a different entry and short enough
+# that a boot never looks like it hung.
+GRUB_DROPIN=/etc/default/grub.d/pocketvm.cfg
+if [ -d /etc/default/grub.d ] && [ ! -f "$GRUB_DROPIN" ]; then
+  printf 'GRUB_RECORDFAIL_TIMEOUT=3\n' >"$GRUB_DROPIN"
+  update-grub >/dev/null 2>&1 || true
+fi
+# And clear whatever the boot that just happened left behind.
+if command -v grub-editenv >/dev/null 2>&1 && [ -f /boot/grub/grubenv ]; then
+  grub-editenv /boot/grub/grubenv unset recordfail >/dev/null 2>&1 || true
+fi
+
 # The console the app shows. The serial line is a terminal only once something
 # is reading it and printing to it, and a stock cloud image leaves ttyAMA0
 # unattended — which is why the panel used to be empty.

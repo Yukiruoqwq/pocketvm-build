@@ -272,12 +272,6 @@ struct WebUIView: UIViewRepresentable {
             case "terminalClosed":
                 break
 
-            case "screenStart":
-                model.startScreenFrames()
-
-            case "screenStop":
-                model.stopScreenFrames()
-
             case "note":
                 // The page's own failures. A terminal that could not be built
                 // is otherwise invisible from here.

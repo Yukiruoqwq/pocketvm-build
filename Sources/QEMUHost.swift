@@ -73,13 +73,6 @@ final class QEMUHost {
     /// any escape sequence that straddles a read boundary, and the serial line
     /// is not guaranteed to be valid UTF-8 at all.
     var onConsoleBytes: ((Data) -> Void)?
-    /// Called with a PNG of the guest's own screen.
-    ///
-    /// The serial line is only a console when the guest decides to make it one.
-    /// The display is not optional in the same way: firmware, the boot loader
-    /// and the kernel all draw to it whether or not anything was configured
-    /// inside the guest, so it is what the frontend shows.
-    var onScreenFrame: ((Data) -> Void)?
     /// Called with human-readable status lines from the host, not the guest.
     var onLog: ((String) -> Void)?
     /// Called when the guest stops, with the process exit status.
@@ -89,8 +82,6 @@ final class QEMUHost {
     private var serialReadSource: DispatchSourceRead?
     private var qmpHostFd: Int32 = -1
     private var qmpReadSource: DispatchSourceRead?
-    private var screenTimer: DispatchSourceTimer?
-    private var loggedScreenError = false
     private var consoleBytesTotal = 0
     private var loggedConsoleSample = false
     private var qemuThread: Thread?
@@ -119,7 +110,6 @@ final class QEMUHost {
     /// QEMU answers them in order, so two callers reading replies at once would
     /// each take the other's answer.
     private static let monitorLock = NSLock()
-    private static let screenQueue = DispatchQueue(label: "com.pocketvm.screen", qos: .utility)
 
     var running: Bool { isRunning }
 
@@ -266,42 +256,7 @@ final class QEMUHost {
         QEMUHost.sendMonitor(fd: qmpHostFd, command: "{\"execute\":\"quit\"}\n")
     }
 
-    // MARK: - Screen
-
-    /// Starts pushing pictures of the guest's own display.
-    ///
-    /// It runs only while the frontend is showing the panel: a frame costs a
-    /// full read of the framebuffer, and there is no reason to spend that on a
-    /// page nobody is looking at.
-    func startScreenCapture(every interval: TimeInterval = 1.2) {
-        stopScreenCapture()
-        guard isRunning, qmpHostFd >= 0 else { return }
-        loggedScreenError = false
-        let timer = DispatchSource.makeTimerSource(queue: QEMUHost.screenQueue)
-        timer.schedule(
-            deadline: .now() + .milliseconds(300),
-            repeating: .milliseconds(Int((interval * 1000).rounded())),
-            leeway: .milliseconds(120)
-        )
-        timer.setEventHandler { [weak self] in self?.captureScreenFrame() }
-        timer.resume()
-        screenTimer = timer
-        log("screen: 画面输出已开始")
-    }
-
-    func stopScreenCapture() {
-        guard let timer = screenTimer else { return }
-        timer.cancel()
-        screenTimer = nil
-        log("screen: 画面输出已停止")
-    }
-
-    private var screenPath: String {
-        // The temporary directory, not Documents: a frame is written a second
-        // at a time, and the app's own file list is the user's, not a scratch
-        // pad for the emulator.
-        FileManager.default.temporaryDirectory.appendingPathComponent("pocketvm-screen.png").path
-    }
+    // MARK: - Console transcript
 
     private var transcriptPath: String {
         documents().appendingPathComponent("console.log").path
@@ -328,54 +283,8 @@ final class QEMUHost {
         }
     }
 
-    private func captureScreenFrame() {
-        guard isRunning, qmpHostFd >= 0 else { return }
-        // Skips the frame rather than waiting: the monitor may be busy with the
-        // resize or a shutdown, and a stale picture is worse than no picture.
-        guard QEMUHost.monitorLock.`try`() else { return }
-        defer { QEMUHost.monitorLock.unlock() }
-
-        let path = screenPath
-        try? FileManager.default.removeItem(atPath: path)
-        let command = "{\"execute\":\"screendump\",\"arguments\":{\"filename\":\"\(path)\","
-            + "\"format\":\"png\"}}"
-        QEMUHost.sendMonitor(fd: qmpHostFd, command: command + "\n")
-
-        let reply = QEMUHost.readMonitorReply(fd: qmpHostFd, timeout: 3)
-        if let reply, reply.contains("\"error\"") {
-            // Once, not every frame: a machine with no display device would
-            // otherwise fill the log with the same line.
-            if !loggedScreenError {
-                loggedScreenError = true
-                log("screen: 模拟器拒绝了截屏 \(reply.prefix(120))")
-            }
-            return
-        }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
-            if !loggedScreenError {
-                loggedScreenError = true
-                log("screen: 截屏文件没有写出来")
-            }
-            return
-        }
-        onScreenFrame?(data)
-    }
-
-    /// The reply half of `monitorCommand`, for callers that already hold the
-    /// lock.
-    private static func readMonitorReply(fd: Int32, timeout: TimeInterval) -> String? {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            let remaining = max(0.2, deadline.timeIntervalSinceNow)
-            guard let line = readMonitorLine(fd: fd, timeout: remaining) else { return nil }
-            if line.contains("\"return\"") || line.contains("\"error\"") { return line }
-        }
-        return nil
-    }
-
     private func teardown() {
         isRunning = false
-        stopScreenCapture()
         serialReadSource?.cancel()
         serialReadSource = nil
         if serialHostFd >= 0 {
@@ -542,12 +451,10 @@ final class QEMUHost {
 
         // Firmware and future ACPI tables live in the bundle.
         args += ["-L", firmwareDirectory.path]
-        // No window backend: the picture is taken from the machine instead.
-        // The device itself is not optional — without it QEMU has no surface at
-        // all, so the firmware never draws a boot logo, the boot loader never
-        // draws a menu and the kernel has no console to log to.
+        // No window backend. There is nothing to draw to: the guest's own
+        // system has no graphics driver, so a display device would only add a
+        // PCI slot and a boot entry that could stop resolving.
         args += ["-display", "none"]
-        args += ["-device", "virtio-gpu-pci"]
 
         // Console over the socket pair created above.
         args += ["-chardev", "socket,id=term0,fd=\(qemuSerialFd)"]

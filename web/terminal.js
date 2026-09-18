@@ -149,13 +149,13 @@ function openTerminal() {
   const host = document.getElementById("terminalHost");
   if (!host) return terminal;
 
-  let terminal;
+  // A terminal that could not be built looks exactly like a guest that said
+  // nothing: an empty panel. Saying so, here and in the host's log, is the
+  // difference between a bug report and a diagnosis, so the whole of the
+  // mounting is guarded rather than only the constructor.
   try {
-    terminal = ensureTerminal();
+    return mountTerminal(host);
   } catch (error) {
-    // A terminal that could not be built looks exactly like a guest that said
-    // nothing: an empty panel. Saying so, here and in the host's log, is the
-    // difference between a bug report and a diagnosis.
     if (!host.dataset.failed) {
       host.dataset.failed = "1";
       host.textContent = `终端不可用：${error}`;
@@ -164,6 +164,10 @@ function openTerminal() {
     }
     return null;
   }
+}
+
+function mountTerminal(host) {
+  const terminal = ensureTerminal();
 
   if (!opened) {
     terminal.open(host);
@@ -204,9 +208,6 @@ function openTerminal() {
 function terminalReceive(payload) {
   if (!payload) return;
   if (typeof payload.base64 !== "string") return;
-  // The panel shows the guest's display; the serial line is only the host's
-  // diagnostic stream now, and nothing on the page draws it.
-  if (!document.getElementById("terminalHost")) return;
   const bytes = base64ToBytes(payload.base64);
   if (!opened) {
     // Keep the tail until somebody opens the panel.
@@ -223,35 +224,4 @@ function terminalReceive(payload) {
 function setTerminalState(text) {
   const el = document.getElementById("terminalState");
   if (el) el.textContent = text;
-}
-
-// ---------------------------------------------------------------- 画面
-//
-// The guest's own display, which is the view that cannot be empty: the
-// firmware, the boot loader and the kernel all draw to it whether or not
-// anything inside the guest was configured to use the serial line.
-
-/// Drawing a frame is what a framebuffer does; it is not an event anyone has to
-/// be told about, so the picture is simply the last one received.
-function screenReceive(payload) {
-  if (!payload || typeof payload.base64 !== "string") return;
-  const image = document.getElementById("screenImage");
-  if (!image) return;
-  image.src = `data:image/png;base64,${payload.base64}`;
-  image.hidden = false;
-  const note = document.getElementById("screenNote");
-  if (note) note.hidden = true;
-}
-
-/// Frames are asked for only while the tab is on screen: each one is a full read
-/// of the guest's framebuffer, which is not free on a translated CPU.
-function requestScreen(on) {
-  if (termBridge.available) termBridge.send(on ? "screenStart" : "screenStop", {});
-}
-
-/// Browser preview: a frame is never coming, so say what the panel is waiting
-/// for instead of leaving it black.
-function screenPreview() {
-  const note = document.getElementById("screenNote");
-  if (note) note.textContent = "预览：设备上这里显示客户机画面";
 }

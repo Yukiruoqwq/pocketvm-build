@@ -592,27 +592,6 @@ ul { margin: 0; padding: 0; list-style: none; }
   font-size: var(--text-sm); color: var(--fg-dim);
 }
 .tab-item.active { background: var(--bg-active); color: var(--fg); }
-.screen-host {
-  /* The picture keeps its own black: it is a framebuffer, not a surface of the
-     app, and a guest that has painted nothing yet must not look like a
-     rendering failure. */
-  position: relative;
-  flex: 1; min-height: 0; background: #000;
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden;
-}
-.screen-host[hidden] { display: none; }
-.screen-host img {
-  max-width: 100%; max-height: 100%;
-  width: auto; height: auto;
-  image-rendering: -webkit-optimize-contrast;
-}
-.screen-host img[hidden] { display: none; }
-.screen-note {
-  color: var(--fg-faint);
-  font-size: var(--text-sm);
-}
-.screen-note[hidden] { display: none; }
 .terminal-host {
   /* The console keeps its own dark surface in both themes: the emulator's
      palette is written for it, and a transparent background made the text

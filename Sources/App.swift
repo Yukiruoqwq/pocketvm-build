@@ -103,13 +103,6 @@ final class VMModel: ObservableObject {
         host.onLog = { [weak self] line in
             Task { @MainActor in self?.append(diagnostic: line) }
         }
-        host.onScreenFrame = { [weak self] data in
-            let encoded = data.base64EncodedString()
-            Task { @MainActor in
-                guard let self else { return }
-                self.pushToWeb?(["action": "screenFrame", "payload": ["base64": encoded]])
-            }
-        }
         host.onExit = { [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
@@ -536,7 +529,6 @@ final class VMModel: ObservableObject {
     func stop() {
         guard isRunning, !stopping else { return }
         stopping = true
-        host.stopScreenCapture()
         status = "stopping"
         bootDetail = "正在关机"
         appendStatus("正在请求客户机关机…")
@@ -608,16 +600,6 @@ final class VMModel: ObservableObject {
     func writeToConsole(_ data: Data) {
         guard isRunning else { return }
         host.writeToConsole(data)
-    }
-
-    /// The 画面 panel asks for pictures only while it is on screen.
-    func startScreenFrames() {
-        guard isRunning else { return }
-        host.startScreenCapture()
-    }
-
-    func stopScreenFrames() {
-        host.stopScreenCapture()
     }
 
     private func ingestConsole(_ data: Data) {

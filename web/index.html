@@ -250,18 +250,27 @@
 
   <section class="bottom-panel" id="bottomPanel" hidden>
     <header class="bottom-head">
-      <span class="tab-item active">画面</span>
+      <button class="tab-item active" type="button">终端</button>
       <button class="icon-btn" type="button" id="closeBottomPanel" title="隐藏底部面板">
         <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>
     </header>
-    <!-- The guest's own display, in place of the serial console. The serial
-         line is a console only when the guest made it one — the firmware, the
-         boot loader and the kernel draw here whether or not anything inside
-         the guest was configured. -->
-    <div class="screen-host" id="screenHost">
-      <img id="screenImage" alt="" hidden>
-      <p class="screen-note" id="screenNote">等待画面</p>
+    <div class="terminal-host" id="terminalHost"></div>
+    <!-- A console needs keys the iPad keyboard does not have: Esc, Tab, the
+         arrows, and above all Ctrl+C. Each button writes the byte a terminal
+         would send, so the guest sees exactly what its own keyboard would. -->
+    <div class="key-row" id="keyRow">
+      <button class="key" type="button" data-key="escape">esc</button>
+      <button class="key" type="button" data-key="tab">tab</button>
+      <button class="key" type="button" id="ctrlKey" data-key="ctrl" aria-pressed="false">ctrl</button>
+      <button class="key" type="button" data-key="ctrl-c">^C</button>
+      <button class="key" type="button" data-key="ctrl-d">^D</button>
+      <button class="key" type="button" data-key="ctrl-z">^Z</button>
+      <span class="key-spacer"></span>
+      <button class="key" type="button" data-key="arrow-left">←</button>
+      <button class="key" type="button" data-key="arrow-up">↑</button>
+      <button class="key" type="button" data-key="arrow-down">↓</button>
+      <button class="key" type="button" data-key="arrow-right">→</button>
     </div>
   </section>
 </div>

@@ -1007,13 +1007,7 @@ function gateCard(phase) {
       title: "启动中",
       facts: [provision.image, provision.detail || "正在启动 QEMU"],
       progress: null,
-      // A boot can stop making progress — a boot loader waiting for a key, a
-      // disk that needs repairing — and the card is the only thing that can be
-      // tapped while it is up, so the way out has to be on it.
-      actions: [
-        { label: "停止", kind: "ghost", action: () => bridge.send("stop") },
-        { label: "启动中", kind: "status" },
-      ],
+      actions: [{ label: "启动中", kind: "status" }],
     };
   }
   return {
@@ -1173,9 +1167,6 @@ window.pocketvmReceive = function (message) {
     case "terminalOutput":
       terminalReceive(message.payload);
       break;
-    case "screenFrame":
-      screenReceive(message.payload);
-      break;
     case "terminalState":
       setTerminalState(message.payload?.text ?? "未连接");
       break;
@@ -1220,16 +1211,14 @@ function wireChrome() {
     setSidePanel(sidePanelChoice);
   });
 
-  // 底部面板 — the guest's own display. The serial console it replaces is still
-  // read by the host, but what is drawn here is what the machine is drawing.
+  // 底部面板 — the guest's serial console.
   const setBottomPanel = (open) => {
     $("bottomPanel").hidden = !open;
     $("menuBottomPanel").checked = open;
-    if (typeof requestScreen === "function") {
-      // Frames stop with the panel: each one is a full read of the guest's
-      // framebuffer, and nobody is looking at it while it is closed.
-      requestScreen(open);
-    }
+    // The emulator is attached the first time it is actually visible: opened
+    // while hidden it measures zero and draws nothing.
+    if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());
+    if (typeof wireKeyRow === "function") wireKeyRow();
   };
   $("toggleBottomPanel").addEventListener("click", () => setBottomPanel($("bottomPanel").hidden));
   $("closeBottomPanel").addEventListener("click", () => setBottomPanel(false));
@@ -1656,7 +1645,6 @@ function main() {
   if (params.has("terminal")) {
     $("toggleBottomPanel").click();
   }
-  if (preview) screenPreview();
   // Review shortcut: ?models=1 opens the picker so it can be looked at without
   // a mouse.
   if (params.has("models")) $("modelChip").click();
