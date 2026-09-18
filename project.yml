@@ -34,7 +34,7 @@ targets:
       properties:
         CFBundleDisplayName: PocketVM
         CFBundleShortVersionString: "1.0"
-        CFBundleVersion: "17"
+        CFBundleVersion: "18"
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}

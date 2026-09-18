@@ -108,7 +108,11 @@ final class Provisioner: ObservableObject {
         VMConfiguration.documentsDirectory.appendingPathComponent("direct-boot.pending")
     }
     func acknowledgeSystemBoot() {
-        try? FileManager.default.removeItem(at: bootAttempt)
+        guard FileManager.default.fileExists(atPath: bootAttempt.path) else { return }
+        do {
+            try FileManager.default.removeItem(at: bootAttempt)
+            onLog?("direct boot confirmed; fallback marker cleared")
+        } catch { onLog?("failed to acknowledge direct boot: \(error)") }
     }
     func finishBootUpload(_ body: Data) -> Bool {
         do {
@@ -387,7 +391,9 @@ final class Provisioner: ObservableObject {
             mode: .direct,
             kernel: kernelPath,
             initrd: initrdPath,
-            cmdline: direct.cmdline
+            // Direct ARM boot bypasses firmware SMBIOS publication. Supply
+            // NoCloud explicitly so per-boot helpers run on this path too.
+            cmdline: direct.cmdline + " ds=nocloud-net;s=http://10.0.2.2:\(Self.helperPort)/"
         )
     }
 

@@ -18,4 +18,9 @@ test('spawn failure is a process event not stderr text',()=>{const f=fixture();f
 test('malformed protocol fails closed',()=>{const f=fixture();f.init();f.child.stdout.emit('data',Buffer.from('logged in\n'));assert.equal(f.relay.ready,false);});
 test('split JSON is reassembled',()=>{const f=fixture();f.child.stdout.emit('data',Buffer.from('{"id":"init'));f.child.stdout.emit('data',Buffer.from('ialize","result":{}}\n'));assert.equal(f.relay.ready,true);});
 test('initialize errors never grant readiness',()=>{const f=fixture();f.emit({id:'initialize',error:{code:-32600,message:'error'}});assert.equal(f.relay.ready,false);});
+test('spawn status is a process event, separate from protocol readiness',()=>{
+ const f=fixture();assert.equal(f.relay.packet().spawned,false);
+ f.child.emit('spawn');assert.equal(f.relay.packet().spawned,true);
+ assert.equal(f.relay.packet().ready,false);f.init();assert.equal(f.relay.packet().ready,true);
+});
 test('server requests retain their typed ids and params',()=>{const f=fixture();f.init();f.emit({id:42,method:'item/commandExecution/requestApproval',params:{}});assert.equal(f.relay.packet().events[0].message.id,42);});

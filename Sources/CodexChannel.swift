@@ -5,6 +5,8 @@ import Foundation
 final class CodexChannel {
     var onState: ((Bool, String?) -> Void)?
     var onEvent: (([String: Any]) -> Void)?
+    var onProcessStarted: (() -> Void)?
+    private var processStarted = false
     private var epoch: String?
     private var ack = 0
     private var ready = false
@@ -21,6 +23,7 @@ final class CodexChannel {
     }
     func reset() {
         ready = false; epoch = nil; ack = 0; requests.removeAll()
+        processStarted = false
         let pending = Array(callbacks.values); callbacks.removeAll(); deadlines.removeAll()
         for callback in pending { callback(["error": ["message": "连接已断开；未自动重发请求"]]) }
     }
@@ -40,6 +43,10 @@ final class CodexChannel {
             if replaced { onState?(false, "Codex 进程已重新启动") }
         }
         lastSeen = Date()
+        if !processStarted, packet["spawned"] as? Bool == true, packet["failure"] == nil || packet["failure"] is NSNull {
+            processStarted = true
+            onProcessStarted?()
+        }
         if ready != isReady {
             ready = isReady
             onState?(ready, ready ? nil : "Codex 服务正在重连")

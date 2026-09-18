@@ -5,14 +5,19 @@ import Foundation
         let channel = CodexChannel()
         let epoch = UUID().uuidString
         var transitions: [Bool] = []
+        var spawned = 0
+        channel.onProcessStarted = { spawned += 1 }
         channel.onState = { ready, _ in transitions.append(ready) }
         func exchange(_ seq: Int? = nil, _ message: [String: Any] = [:], ready: Bool = true) throws -> [String: Any] {
             let events: [[String: Any]] = seq.map { [["seq": $0, "message": message]] } ?? []
-            let packet: [String: Any] = ["version": 1, "epoch": epoch, "ready": ready, "events": events]
+            let packet: [String: Any] = ["version": 1, "epoch": epoch, "ready": ready, "spawned": true, "failure": NSNull(), "events": events]
             let data = channel.exchange(try JSONSerialization.data(withJSONObject: packet))!
             return try JSONSerialization.jsonObject(with: data) as! [String: Any]
         }
+        _ = try exchange(ready: false)
+        assert(spawned == 1 && transitions.isEmpty)
         _ = try exchange()
+        assert(spawned == 1)
         assert(transitions == [true])
         var replies = 0
         channel.request("turn/start", ["threadId": "t"]) { _ in replies += 1 }

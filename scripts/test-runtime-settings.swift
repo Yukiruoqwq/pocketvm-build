@@ -3,6 +3,16 @@ import Foundation
 @main struct RuntimeSettingsTests {
     static func main() throws {
         let legacy = VMConfiguration()
+        var boot = BootProgress()
+        precondition(boot.phase == .qemu)
+        boot.advance(to: .system)
+        precondition(boot.phase.detail == "正在引导系统")
+        boot.advance(to: .codex)
+        boot.advance(to: .system) // Delayed /boot must never regress the UI.
+        precondition(boot.phase == .codex)
+        boot.advance(to: .ready)
+        boot.advance(to: .codex)
+        precondition(boot.phase == .ready)
         let data = try JSONEncoder().encode(legacy)
         let decoded = try JSONDecoder().decode(VMConfiguration.self, from: data)
         precondition(decoded.sshForward == nil)

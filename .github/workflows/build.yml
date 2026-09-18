@@ -29,6 +29,7 @@ jobs:
       - name: Validate guest protocol and scripts
         run: |
           node --test scripts/test-app-server.mjs
+          node --test scripts/test-terminal-replay.cjs
           node --check web/app.js
           node --check web/terminal.js
           for script in guest/*.sh; do bash -n "$script"; done
@@ -54,7 +55,7 @@ jobs:
         run: |
           xcrun swiftc -parse-as-library Sources/CodexChannel.swift scripts/test-channel.swift -o "$RUNNER_TEMP/channel-tests"
           "$RUNNER_TEMP/channel-tests"
-          xcrun swiftc -parse-as-library Sources/VMConfiguration.swift Sources/ExecutionMode.swift scripts/test-runtime-settings.swift -o "$RUNNER_TEMP/settings-tests"
+          xcrun swiftc -parse-as-library Sources/VMConfiguration.swift Sources/ExecutionMode.swift Sources/BootProgress.swift scripts/test-runtime-settings.swift -o "$RUNNER_TEMP/settings-tests"
           "$RUNNER_TEMP/settings-tests"
 
       - name: Fetch prebuilt runtime

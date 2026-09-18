@@ -19,6 +19,7 @@ const termBridge = {
 let term = null;
 let fitAddon = null;
 let opened = false;
+const terminalReplay = new TerminalReplay();
 /// The first write is the one worth reporting: everything before the panel is
 /// opened is buffered, so "the console is empty" and "the bytes never reached
 /// the page" look identical from here.
@@ -80,6 +81,7 @@ function updateCtrlKey() {
 
 /// One of the extra keys: a fixed byte sequence, or the Ctrl latch.
 function sendKey(name) {
+  if (terminalReplay.active) return;
   if (name === "ctrl") {
     ctrlLatched = !ctrlLatched;
     updateCtrlKey();
@@ -141,6 +143,7 @@ function ensureTerminal() {
 
   // Keystrokes go to the guest as raw bytes.
   term.onData((data) => {
+    if (terminalReplay.active) return;
     termBridge.send("terminalInput", { data: bytesToBase64(applyCtrl(data)) });
   });
 
@@ -151,7 +154,7 @@ function ensureTerminal() {
 /// while it was closed. Called when the bottom panel is shown.
 function openTerminal() {
   const host = document.getElementById("terminalHost");
-  if (!host) return terminal;
+  if (!host) return null;
 
   // A terminal that could not be built looks exactly like a guest that said
   // nothing: an empty panel. Saying so, here and in the host's log, is the
@@ -214,7 +217,7 @@ function mountTerminal(host) {
     }, 250);
   }
 
-  for (const chunk of pending) terminal.write(chunk);
+  terminalReplay.write(terminal, pending);
   pending = [];
   pendingBytes = 0;
   if (fitAddon) fitAddon.fit();

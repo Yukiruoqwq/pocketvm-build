@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url';
 export class Relay {
   constructor(child, epoch = randomUUID()) {
     this.child = child; this.epoch = epoch; this.ready = false;
+    this.spawned = false;
+    child.on('spawn', () => { this.spawned = true; });
     this.seq = 0; this.events = []; this.received = new Set(); this.buffer = '';
     this.failure = null; this.decoder = new StringDecoder('utf8');
     child.stdout.on('data', chunk => this.read(chunk));
@@ -36,7 +38,7 @@ export class Relay {
       }
     }
   }
-  packet() { return { version: 1, epoch: this.epoch, ready: this.ready, failure: this.failure, received: [...this.received].slice(-128), events: this.events.slice(0, 128) }; }
+  packet() { return { version: 1, epoch: this.epoch, spawned: this.spawned, ready: this.ready, failure: this.failure, received: [...this.received].slice(-128), events: this.events.slice(0, 128) }; }
   accept(reply) {
     if (reply.epoch !== this.epoch) return;
     this.events = this.events.filter(event => event.seq > reply.ack);

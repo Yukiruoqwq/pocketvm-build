@@ -882,6 +882,7 @@ body.entered .app { animation: vm-settle .45s ease; }
 }
 .no-jit-warning { display:flex; align-items:center; justify-content:center; gap:5px; color:#d5a000; font-size:12px; margin:8px 0 0; }
 .no-jit-warning svg { width:14px; height:14px; }
+.vm-gate-card h1.slow-boot-title { color: #edbb24; }
 .slow-mode-badge { position:fixed; right:max(12px, env(safe-area-inset-right)); bottom:max(8px, env(safe-area-inset-bottom)); z-index:10000; color:#d5a000; font-size:12px; pointer-events:none; padding:3px 6px; background:var(--bg-app); border-radius:4px; }
 .slow-mode-badge[hidden] { display:none; }
 

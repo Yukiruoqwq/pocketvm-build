@@ -33,6 +33,7 @@ final class VMModel: ObservableObject {
     @Published private(set) var codexReady = false
     /// The line the gate shows while the machine is coming up.
     @Published private(set) var bootDetail = ""
+    private var bootProgress = BootProgress()
     @Published var diagnostics: [String] = []
     @Published var configurationSummary: String = ""
     /// Authoritative VM description. The frontend only ever sees a copy.
@@ -115,6 +116,9 @@ final class VMModel: ObservableObject {
         host.onLog = { [weak self] line in
             Task { @MainActor in self?.append(diagnostic: line) }
         }
+        host.onInitialized = { [weak self] in
+            Task { @MainActor in self?.advanceBoot(to: .system) }
+        }
         host.onExit = { [weak self] status in
             Task { @MainActor in
                 guard let self else { return }
@@ -127,6 +131,9 @@ final class VMModel: ObservableObject {
                 self.bootDetail = ""
                 self.pushProvisionState()
             }
+        }
+        provisioner.channel.onProcessStarted = { [weak self] in
+            self?.advanceBoot(to: .codex)
         }
         provisioner.channel.onState = { [weak self] ready, error in
             guard let self else { return }
@@ -150,10 +157,7 @@ final class VMModel: ObservableObject {
                 // Installation only proves that the binary was written. The
                 // running guest still has to start its report service and CLI;
                 // The persistent protocol channel owns CLI readiness.
-                if self.isRunning, !self.codexReady {
-                    self.bootDetail = "正在启动 Codex CLI"
-                    self.pushProvisionState()
-                }
+                self.pushProvisionState()
             }
         }
 
@@ -503,9 +507,13 @@ final class VMModel: ObservableObject {
     }
 
     private func noteGuestSystemUp() {
-        guard !codexReady else { return }
-        guard bootDetail != "正在启动 Codex CLI" else { return }
-        bootDetail = "正在启动 Codex CLI"
+        advanceBoot(to: .system)
+    }
+
+    private func advanceBoot(to phase: BootProgress.Phase) {
+        guard (starting || isRunning), !stopping, !codexReady else { return }
+        bootProgress.advance(to: phase)
+        bootDetail = bootProgress.phase.detail
         pushProvisionState()
     }
 
@@ -528,6 +536,9 @@ final class VMModel: ObservableObject {
     private func startPrepared() async {
         guard !isRunning, !stopping, !starting else { return }
         starting = true
+        codexReady = false
+        bootProgress = BootProgress()
+        bootDetail = bootProgress.phase.detail
         executionMode = .select(jitAvailable: JIT.isDebugged)
         pushProvisionState()
         refreshedAfterSignIn = false
@@ -542,7 +553,7 @@ final class VMModel: ObservableObject {
             try host.start(configuration: prepared.configuration, profile: prepared.profile, mode: executionMode ?? .interpreter)
             isRunning = true
             codexReady = false
-            bootDetail = provisioner.isProvisioned ? "正在启动 QEMU" : ""
+            bootDetail = bootProgress.phase.detail
             status = "running"
             appendStatus("虚拟机已启动")
             // Readiness is reported by the guest agent over the helper HTTP
@@ -672,6 +683,9 @@ final class VMModel: ObservableObject {
     }
 
     private func markCodexReady() {
+        // A real guest JSON-RPC handshake also proves that direct boot succeeded.
+        provisioner.acknowledgeSystemBoot()
+        bootProgress.advance(to: .ready)
         guard !codexReady else { return }
         codexReady = true
         bootDetail = ""
@@ -728,6 +742,7 @@ final class VMModel: ObservableObject {
             "stopping": stopping,
             "codexReady": codexReady,
             "detail": bootDetail,
+            "bootPhase": bootProgress.phase.code,
             "cpuCount": configuration?.cpuCount ?? 0,
             "memoryMiB": configuration?.memoryMiB ?? 0,
             "status": status,

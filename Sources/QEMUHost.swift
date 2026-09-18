@@ -77,6 +77,8 @@ final class QEMUHost {
     var onLog: ((String) -> Void)?
     /// Called when the guest stops, with the process exit status.
     var onExit: ((Int32) -> Void)?
+    /// qemu_init returned; guest execution is about to begin.
+    var onInitialized: (() -> Void)?
 
     private var serialHostFd: Int32 = -1
     private var serialReadSource: DispatchSourceRead?
@@ -219,6 +221,7 @@ final class QEMUHost {
             let status = QEMUHost.runQEMU(
                 argv: argv,
                 onInitialized: { [weak self] in
+                    DispatchQueue.main.async { [weak self] in self?.onInitialized?() }
                     guard let self, self.qmpHostFd >= 0 else { return }
                     QEMUHost.growDisk(fd: self.qmpHostFd, resize: profile.resize) { line in
                         DispatchQueue.main.async { self.log(line) }

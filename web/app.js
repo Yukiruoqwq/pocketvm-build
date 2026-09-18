@@ -1010,7 +1010,7 @@ function gateCard(phase) {
   if (phase === "starting") {
     return {
       icon: GATE_ICON_POWER,
-      title: "启动中",
+      title: provision.executionMode === "interpreter" ? "启动中(慢速模式)" : "启动中",
       facts: [provision.image, provision.detail || "正在启动 QEMU"],
       progress: null,
       actions: [{ label: "启动中", kind: "status" }],
@@ -1075,6 +1075,7 @@ function renderGate() {
   icon.innerHTML = spec.icon;
   card.appendChild(icon);
   const title = el("h1", null, spec.title);
+  if (slow && phase === "starting") title.classList.add("slow-boot-title");
   title.id = "vmGateTitle";
   card.appendChild(title);
   if (slow && (phase === "starting" || phase === "installing")) {
