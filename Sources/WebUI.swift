@@ -172,6 +172,12 @@ struct WebUIView: UIViewRepresentable {
                 model.requestModels()
                 model.pushModels()
 
+            case "getAccount":
+                // What the app already knows: the cached limits and conversation
+                // list, so the frontend can draw them before the guest answers.
+                model.pushAccount()
+                model.pushModels()
+
             case "setAppearance":
                 // Validated rather than stored verbatim: the page is not the
                 // authority on what the setting may be.

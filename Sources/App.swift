@@ -46,6 +46,13 @@ final class VMModel: ObservableObject {
     /// account, so there is nothing truthful to show before that.
     @Published private(set) var models: [[String: Any]] = []
     private var modelsError: String?
+    /// The account's usage limits, exactly as the guest's own app server
+    /// reported them. Nil until it has, and cached afterwards so the numbers
+    /// survive a relaunch.
+    @Published private(set) var usageLimits: [String: Any]?
+    /// The conversation list, cached the same way: it is what lets the frontend
+    /// show the last list it had while the guest is still booting.
+    @Published private(set) var threads: [[String: Any]] = []
 
     let provisioner = Provisioner()
     let auth = CodexAuth()
@@ -124,6 +131,7 @@ final class VMModel: ObservableObject {
 
         reloadConfiguration()
         loadAutomations()
+        loadCachedAccount()
     }
 
     func reloadConfiguration() {
@@ -172,6 +180,37 @@ final class VMModel: ObservableObject {
               let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
         else { return }
         automations = list
+    }
+
+    // ------------------------------------------------- 额度与对话列表（缓存）
+
+    private static let limitsKey = "pocketvm.limits"
+    private static let threadsKey = "pocketvm.threads"
+
+    /// The last answers the guest gave. Read at launch so the frontend has
+    /// something true to draw before the machine is even up; replaced the
+    /// moment the guest reports again.
+    private func loadCachedAccount() {
+        if let data = UserDefaults.standard.data(forKey: Self.limitsKey),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            usageLimits = object
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.threadsKey),
+           let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            threads = list
+        }
+    }
+
+    func pushAccount() {
+        if let usageLimits {
+            pushToWeb?(["action": "limits", "payload": usageLimits])
+        }
+        pushToWeb?(["action": "threads", "payload": ["threads": threads]])
+    }
+
+    private func persist(_ object: Any, key: String) {
+        guard let data = try? JSONSerialization.data(withJSONObject: object) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     private func persistAutomations() {
@@ -271,10 +310,37 @@ final class VMModel: ObservableObject {
         switch path {
         case "/ready":
             markCodexReady()
-        case "/models":
-            applyModels(from: body)
+        case "/report":
+            apply(report: body)
         default:
             break
+        }
+    }
+
+    /// One POST carries everything the guest found in a single app-server
+    /// session: the models, the usage limits and the conversation list.
+    private func apply(report body: Data) {
+        guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return }
+        if let list = object["models"] as? [[String: Any]] {
+            models = list
+            modelsError = nil
+            append(diagnostic: "guest reported \(list.count) model(s)")
+            pushModels()
+        }
+        if let limits = object["limits"] as? [String: Any] {
+            if let error = limits["error"] as? String {
+                append(diagnostic: "usage limits unavailable: \(error)")
+            } else {
+                usageLimits = limits
+                persist(limits, key: Self.limitsKey)
+            }
+            pushAccount()
+        }
+        if let list = object["threads"] as? [[String: Any]] {
+            threads = list
+            persist(list, key: Self.threadsKey)
+            append(diagnostic: "guest reported \(list.count) conversation(s)")
+            pushAccount()
         }
     }
 

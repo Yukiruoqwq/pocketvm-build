@@ -23,7 +23,7 @@ install_self() {
   command -v curl >/dev/null 2>&1 || return 1
   install -d "$LIB" || return 1
   curl -fsS -m 60 "$BASE/pocketvm-report.sh" -o /usr/local/sbin/pocketvm-report || return 1
-  curl -fsS -m 60 "$BASE/pocketvm-models.mjs" -o "$LIB/pocketvm-models.mjs" || true
+  curl -fsS -m 60 "$BASE/pocketvm-app.mjs" -o "$LIB/pocketvm-app.mjs" || true
   chmod 0755 /usr/local/sbin/pocketvm-report
   cat >/etc/systemd/system/pocketvm-report.service <<'EOF'
 [Unit]
@@ -48,11 +48,13 @@ report() {
   command -v codex >/dev/null 2>&1 || return 0
   version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
   post ready "{\"stage\":\"ready\",\"version\":\"${version:-unknown}\"}"
-  if [ -f "$LIB/pocketvm-models.mjs" ] && command -v node >/dev/null 2>&1; then
-    node "$LIB/pocketvm-models.mjs" 2>/dev/null \
-      | sed -n 's/^POCKETVM_MODELS //p' > /tmp/pocketvm-models.json || true
-    if [ -s /tmp/pocketvm-models.json ]; then
-      post models "$(cat /tmp/pocketvm-models.json)"
+  # One app-server session answers all of it: models, usage limits and the
+  # conversation list. Starting the server three times would cost more in the
+  # emulated guest than the answers do.
+  if [ -f "$LIB/pocketvm-app.mjs" ] && command -v node >/dev/null 2>&1; then
+    node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
+    if [ -s /tmp/pocketvm-report.json ]; then
+      post report "$(cat /tmp/pocketvm-report.json)"
     fi
   fi
 }

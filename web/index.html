@@ -199,6 +199,18 @@
     <button class="menu-item" type="button" id="menuSettings">设置…</button>
   </div>
 
+  <!-- 头像菜单: what the account is, and how much of it is left. The usage
+       block stays hidden until the guest's own Codex has reported limits. -->
+  <div class="account-menu" id="accountMenu" hidden>
+    <div class="account-menu-head">
+      <span class="avatar" aria-hidden="true"></span>
+      <span class="account-menu-name" id="accountMenuName">PocketVM</span>
+      <span class="account-menu-state" id="accountMenuState">未登录</span>
+    </div>
+    <div class="account-menu-usage" id="accountMenuUsage" hidden></div>
+    <button class="account-menu-item" type="button" id="accountMenuSettings">设置…</button>
+  </div>
+
   <div class="command-menu" id="commandMenuPanel" hidden>
     <input id="commandSearch" type="text" placeholder="搜索聊天或运行命令">
     <ul id="commandList"></ul>

@@ -122,6 +122,16 @@ const state = {
   outputs: [],
   // 来源 — what the guest was built from.
   sources: [],
+  // 剩余额度 — whatever the guest's Codex account reported. Null means it has
+  // not said anything yet, which is not the same as "no limits left".
+  limits: SHOW_DEMO
+    ? {
+        rateLimits: {
+          primary: { usedPercent: 37, windowDurationMins: 10080, resetsAt: Math.floor(Date.now() / 1000) + 3 * 86400 },
+          secondary: { usedPercent: 62, windowDurationMins: 300, resetsAt: Math.floor(Date.now() / 1000) + 7200 },
+        },
+      }
+    : null,
   threads: SHOW_DEMO
     ? [
         { title: "虚拟机", active: true },
@@ -371,6 +381,9 @@ function effortLabel(effort) {
 
 function renderModelChip() {
   const model = selectedModel();
+  // Before the account's models have arrived there is nothing to choose, so the
+  // control is not offered at all rather than offering a guess.
+  $("modelChip").hidden = !availableModels().length;
   $("modelName").textContent = model ? model.displayName ?? model.id : "Codex";
   $("modelEffort").textContent = effortLabel(state.model.effort);
 }
@@ -502,16 +515,39 @@ function wireModelMenu() {
   });
 }
 
+// 最近 — the conversation list, as the guest's Codex last reported it. The host
+// caches it, so it is on screen while the machine is still booting and gets
+// replaced the moment the guest answers again.
+function threadTitle(thread) {
+  return thread.name || thread.title || thread.preview || String(thread.id ?? "").slice(0, 8) || "未命名对话";
+}
+
+function relativeTime(stamp) {
+  const raw = Number(stamp);
+  if (!Number.isFinite(raw) || raw <= 0) return "";
+  const ms = raw > 1e12 ? raw : raw * 1000;
+  const diff = Date.now() - ms;
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.round(diff / 60_000)} 分钟前`;
+  if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} 小时前`;
+  return new Date(ms).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+}
+
 function renderThreads() {
   const list = $("threadList");
   list.innerHTML = "";
-  state.threads.forEach((thread) => {
-    const row = el("li", [thread.active ? "active" : "", thread.running ? "running" : ""].filter(Boolean).join(" "), thread.title);
+  for (const thread of state.threads) {
+    const row = el("li", thread.active ? "active" : "");
+    row.appendChild(el("span", "thread-title", threadTitle(thread)));
+    const stamp = relativeTime(thread.updatedAt ?? thread.recencyAt ?? thread.createdAt);
+    if (stamp) row.appendChild(el("span", "thread-time", stamp));
     row.addEventListener("click", () => {
-      $("threadTitle").textContent = thread.title;
+      for (const other of list.querySelectorAll("li")) other.classList.remove("active");
+      row.classList.add("active");
+      $("threadTitle").textContent = threadTitle(thread);
     });
     list.appendChild(row);
-  });
+  }
 }
 
 // ----------------------------------------------------------------- sidebar
@@ -521,6 +557,92 @@ function renderAccount() {
   const label = $("accountState");
   label.textContent = signedIn ? "已登录" : state.auth.state === "awaiting" ? "等待确认" : "未登录";
   label.classList.toggle("online", signedIn);
+
+  const menuState = $("accountMenuState");
+  menuState.textContent = label.textContent;
+  menuState.classList.toggle("online", signedIn);
+  renderUsage();
+}
+
+// 剩余额度 — the account's own windows, drawn as they were reported.
+
+/// The label the app itself uses for a window: 5 小时 / 每周 / 每日 / 每月.
+function windowLabel(minutes) {
+  if (minutes === 300) return "5 小时使用限额";
+  if (minutes === 1440) return "每日使用限额";
+  if (minutes === 10080) return "每周使用限额";
+  if (minutes >= 43200) return "每月使用限额";
+  return "使用限额";
+}
+
+/// Every window the server actually sent, biggest first. A window that is null
+/// or missing is left out: the app treats a missing number as unavailable, not
+/// as a full quota.
+function usageWindows() {
+  const limits = state.limits;
+  if (!limits || typeof limits !== "object") return [];
+  const windows = [];
+  const seen = new Set();
+  const add = (bucket) => {
+    if (!bucket || typeof bucket !== "object") return;
+    const used = Number(bucket.usedPercent);
+    const minutes = Number(bucket.windowDurationMins);
+    if (!Number.isFinite(used)) return;
+    const key = Number.isFinite(minutes) ? minutes : "unknown";
+    if (seen.has(key)) return;
+    seen.add(key);
+    windows.push({
+      label: windowLabel(minutes),
+      minutes: Number.isFinite(minutes) ? minutes : 0,
+      remaining: Math.max(0, Math.min(100, Math.round(100 - used))),
+      used,
+      resetsAt: Number(bucket.resetsAt) || null,
+    });
+  };
+  const legacy = limits.rateLimits;
+  if (legacy) {
+    add(legacy.primary);
+    add(legacy.secondary);
+  }
+  const byLimit = limits.rateLimitsByLimitId;
+  if (byLimit && typeof byLimit === "object") {
+    for (const entry of Object.values(byLimit)) {
+      if (!entry || typeof entry !== "object") continue;
+      add(entry.primary);
+      add(entry.secondary);
+    }
+  }
+  // Longest window first, the way the app lists them: weekly above 5-hour.
+  return windows.sort((a, b) => b.minutes - a.minutes);
+}
+
+function renderUsage() {
+  const box = $("accountMenuUsage");
+  const windows = usageWindows();
+  box.innerHTML = "";
+  // Before the account has reported anything — including before signing in —
+  // there is no usage block at all, weekly or 5-hour.
+  box.hidden = windows.length === 0;
+  if (!windows.length) return;
+  for (const window of windows) {
+    const row = el("div", "usage-row");
+    const head = el("div", "usage-head");
+    head.appendChild(el("span", "usage-label", window.label));
+    head.appendChild(el("span", "usage-remaining", `剩余 ${window.remaining}% 使用量`));
+    row.appendChild(head);
+    const bar = el("div", "usage-bar");
+    const fill = el("span");
+    fill.style.width = `${Math.max(2, Math.min(100, Math.round(window.used)))}%`;
+    bar.appendChild(fill);
+    row.appendChild(bar);
+    if (window.resetsAt) {
+      const when = new Date(window.resetsAt * 1000);
+      row.appendChild(
+        el("div", "usage-reset", `将于 ${when.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })} 重置`),
+      );
+    }
+    box.appendChild(row);
+  }
 }
 
 // ---------------------------------------------------------------- settings
@@ -984,6 +1106,14 @@ window.pocketvmReceive = function (message) {
     case "models":
       applyModels(message.payload || {});
       break;
+    case "limits":
+      state.limits = message.payload || null;
+      renderUsage();
+      break;
+    case "threads":
+      state.threads = message.payload?.threads ?? [];
+      renderThreads();
+      break;
     case "config":
       state.config = message.payload || state.config;
       renderGate();
@@ -1071,6 +1201,11 @@ function wireChrome() {
     if (headerMenu.contains(event.target) || event.target.closest("#headerMenu")) return;
     headerMenu.hidden = true;
   });
+  document.addEventListener("click", (event) => {
+    if ($("accountMenu").hidden) return;
+    if (event.target.closest("#accountMenu") || event.target.closest("#account")) return;
+    $("accountMenu").hidden = true;
+  });
 
   $("menuSettings").addEventListener("click", () => {
     headerMenu.hidden = true;
@@ -1078,7 +1213,20 @@ function wireChrome() {
   });
 
   wireCommandMenu();
-  $("account").addEventListener("click", openSettings);
+  // 头像 — the account menu: what the account is, what is left of it, and the
+  // way into settings.
+  $("account").addEventListener("click", (event) => {
+    event.stopPropagation();
+    const menu = $("accountMenu");
+    menu.hidden = !menu.hidden;
+    if (menu.hidden) return;
+    renderAccount();
+    bridge.send("getAccount");
+  });
+  $("accountMenuSettings").addEventListener("click", () => {
+    $("accountMenu").hidden = true;
+    openSettings();
+  });
   $("newThread").addEventListener("click", startNewThread);
   $("closeSettings").addEventListener("click", closeSettings);
   document.addEventListener("keydown", (event) => {
@@ -1094,6 +1242,7 @@ function wireChrome() {
     closeModelMenu();
     closeContextMenu();
     closeAutomationEditor();
+    $("accountMenu").hidden = true;
   });
 }
 
@@ -1407,6 +1556,9 @@ function main() {
     bridge.send("getProvisionState");
     bridge.send("getAutomations");
     bridge.send("getAppearance");
+    // Cached first: the last conversation list and usage numbers show while the
+    // guest is still booting, and are replaced when it reports again.
+    bridge.send("getAccount");
   }
 
   // Review shortcuts: ?panel=1 opens the side panel, ?settings=vm opens that
@@ -1455,6 +1607,8 @@ function main() {
   // Review shortcut: ?models=1 opens the picker so it can be looked at without
   // a mouse.
   if (params.has("models")) $("modelChip").click();
+  // Review shortcut: ?account=1 opens the avatar menu.
+  if (params.has("account")) $("account").click();
   if (params.has("settings")) {
     const wanted = params.get("settings");
     if (settingsPages.some((page) => page.id === wanted)) activePage = wanted;

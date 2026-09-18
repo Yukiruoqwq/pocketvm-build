@@ -300,7 +300,7 @@ final class Provisioner: ObservableObject {
     /// helper scripts from.
     private func startHelperServer() throws -> SeedServer {
         var resources: [String: SeedServer.Resource] = [:]
-        for name in ["pocketvm-models.mjs", "pocketvm-report.sh"] {
+        for name in ["pocketvm-app.mjs", "pocketvm-report.sh"] {
             guard let text = Self.bundledGuestFile(name) else {
                 onLog?("helper \(name) is missing from the app bundle")
                 continue

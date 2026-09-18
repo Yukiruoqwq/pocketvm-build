@@ -139,6 +139,11 @@ ul { margin: 0; padding: 0; list-style: none; }
   cursor: default;
 }
 .thread-list li:hover { background: var(--bg-hover); }
+.thread-list li { cursor: pointer; }
+.thread-list .thread-title { display: inline; }
+/* The time only appears when the row has room for it; the title keeps its line
+   either way, because a truncated time is worse than none. */
+.thread-list .thread-time { float: right; margin-left: 8px; font-size: var(--text-xs); color: var(--fg-faint); }
 .thread-list li.active { background: var(--bg-active); }
 .thread-list li.running::after {
   content: ""; float: right; width: 7px; height: 7px; margin-top: 6px;
@@ -279,6 +284,9 @@ ul { margin: 0; padding: 0; list-style: none; }
 .chip:hover { background: var(--bg-hover); }
 
 .model-chip { display: inline-flex; align-items: center; gap: 6px; color: var(--fg); }
+/* Before the guest's Codex has reported the account's models there is nothing
+   to switch between, so the control is not there at all. */
+.model-chip[hidden] { display: none; }
 .model-chip .model-effort { color: var(--fg-faint); }
 .model-chip[aria-expanded="true"] { background: var(--bg-hover); }
 
@@ -329,6 +337,48 @@ ul { margin: 0; padding: 0; list-style: none; }
 .speed-title { font-size: var(--text-base); }
 .speed-desc { font-size: var(--text-sm); color: var(--fg-faint); }
 .speed-row .switch { margin-left: auto; }
+
+/* --------------------------------------------------------------- 头像菜单 */
+.account-menu {
+  position: fixed; z-index: 45;
+  left: 12px; bottom: 68px;
+  width: 264px; padding: 6px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 24%);
+}
+.account-menu[hidden] { display: none; }
+.account-menu-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px 10px;
+}
+.account-menu-name { font-size: var(--text-base); color: var(--fg); }
+.account-menu-state { margin-left: auto; font-size: var(--text-sm); color: var(--fg-faint); }
+.account-menu-state.online { color: var(--ok); }
+
+/* 剩余额度 — one row per window the account actually has. A window the server
+   did not send is not drawn at all, because a missing number is not zero. */
+.account-menu-usage { padding: 2px 4px 4px; }
+.account-menu-usage[hidden] { display: none; }
+.usage-row { padding: 8px 6px 10px; }
+.usage-row + .usage-row { border-top: 1px solid var(--border-soft); }
+.usage-head { display: flex; align-items: baseline; gap: 8px; }
+.usage-label { font-size: var(--text-sm); color: var(--fg-dim); }
+.usage-remaining { margin-left: auto; font-size: var(--text-sm); color: var(--fg); }
+.usage-reset { margin-top: 4px; font-size: var(--text-xs); color: var(--fg-faint); }
+.usage-bar {
+  margin-top: 8px; height: 4px; border-radius: 2px; overflow: hidden;
+  background: light-dark(rgb(0 0 0 / 10%), rgb(255 255 255 / 12%));
+}
+.usage-bar span { display: block; height: 100%; background: var(--accent); }
+
+.account-menu-item {
+  display: block; width: 100%; padding: 8px 10px;
+  border-radius: var(--radius-sm); text-align: left;
+  font-size: var(--text-base); color: var(--fg);
+}
+.account-menu-item:hover { background: var(--bg-hover); }
 
 .ctx-menu {
   position: fixed; z-index: 40;
