@@ -36,7 +36,7 @@ export class Relay {
       }
     }
   }
-  packet() { return { version: 1, epoch: this.epoch, ready: this.ready, failure: this.failure, events: this.events.slice(0, 128) }; }
+  packet() { return { version: 1, epoch: this.epoch, ready: this.ready, failure: this.failure, received: [...this.received].slice(-128), events: this.events.slice(0, 128) }; }
   accept(reply) {
     if (reply.epoch !== this.epoch) return;
     this.events = this.events.filter(event => event.seq > reply.ack);

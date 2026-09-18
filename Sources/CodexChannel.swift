@@ -34,7 +34,11 @@ final class CodexChannel {
         guard let packet = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               packet["version"] as? Int == 1, let incoming = packet["epoch"] as? String,
               UUID(uuidString: incoming) != nil, let isReady = packet["ready"] as? Bool else { return nil }
-        if epoch != incoming { reset(); epoch = incoming }
+        if epoch != incoming {
+            let replaced = epoch != nil
+            reset(); epoch = incoming
+            if replaced { onState?(false, "Codex 进程已重新启动") }
+        }
         lastSeen = Date()
         if ready != isReady {
             ready = isReady
@@ -55,8 +59,9 @@ final class CodexChannel {
                 requests.append(["id": message["id"]!, "error": ["code": -32601, "message": "此客户端尚不支持此交互请求"]])
             } else { onEvent?(message) }
         }
+        let receipts = Set((packet["received"] as? [Any] ?? []).map { String(describing: $0) })
+        requests.removeAll { $0["error"] != nil && receipts.contains(String(describing: $0["id"]!)) }
         let reply: [String: Any] = ["epoch": incoming, "ack": ack, "requests": Array(requests.prefix(64))]
-        requests.removeAll { $0["error"] != nil }
         return try? JSONSerialization.data(withJSONObject: reply)
     }
     private func tick() {
