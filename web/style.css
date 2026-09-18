@@ -39,6 +39,8 @@
   --accent: light-dark(#0285ff, #339cff);
   --accent-fg: light-dark(#ffffff, #0d0d0d);
   --ok: light-dark(#00a240, #40c977);
+  --terminal-height: min(44vh, 520px);
+  --keyboard-offset: 0px;
 }
 
 :root[data-theme="light"] { color-scheme: light; }
@@ -577,11 +579,43 @@ ul { margin: 0; padding: 0; list-style: none; }
 .bottom-panel {
   grid-column: 2 / -1;
   display: flex; flex-direction: column; min-height: 0;
-  height: 240px;
+  height: var(--terminal-height);
+  max-height: calc(100dvh - 52px - var(--keyboard-offset));
+  min-height: 190px;
+  position: fixed;
+  left: var(--sidebar-w);
+  right: var(--panel-w);
+  bottom: var(--keyboard-offset);
+  z-index: 20;
   background: var(--bg-under);
   border-top: 1px solid var(--border-soft);
 }
 .bottom-panel[hidden] { display: none; }
+.app.no-sidebar .bottom-panel { left: 0; }
+.app.no-panel .bottom-panel { right: 0; }
+.app.panel-max .bottom-panel { right: 0; }
+.bottom-panel.maximized {
+  top: 0;
+  height: auto;
+  max-height: calc(100dvh - var(--keyboard-offset));
+}
+.terminal-resize-handle {
+  height: 12px;
+  flex: none;
+  cursor: ns-resize;
+  touch-action: none;
+  position: relative;
+}
+.terminal-resize-handle::after {
+  content: "";
+  position: absolute;
+  left: 50%; top: 5px;
+  width: 42px; height: 3px;
+  transform: translateX(-50%);
+  border-radius: 3px;
+  background: var(--fg-faint);
+  opacity: .55;
+}
 .bottom-head {
   display: flex; align-items: center; gap: 4px;
   padding: 4px 8px; border-bottom: 1px solid var(--border-soft);
@@ -603,6 +637,7 @@ ul { margin: 0; padding: 0; list-style: none; }
      white on white. */
   flex: 1; min-height: 0; background: #0d0d0d;
   padding: 6px 8px 8px;
+  min-height: 0;
 }
 .terminal-host[hidden] { display: none; }
 .terminal-host .xterm { height: 100%; }
@@ -749,6 +784,7 @@ ul { margin: 0; padding: 0; list-style: none; }
   .app.panel-open { grid-template-columns: 0 minmax(0, 1fr) var(--panel-w); }
   .app.panel-open .side-panel { display: flex; }
   .app.panel-open .sidebar { display: none; }
+  .bottom-panel { left: 0; right: 0; }
 }
 
 /* ------------------------------------------------------------------ 启动遮罩

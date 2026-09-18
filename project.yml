@@ -71,6 +71,3 @@ targets:
             rsync -a --delete "${FIRMWARE_SRC}/" "${DEST_APP}/qemu/"
           fi
           echo "Embedded $(ls -1 "${DEST_APP}/Frameworks" | wc -l) framework(s)"
-
-
-

@@ -40,6 +40,8 @@ const wanted = Object.entries(METHODS).filter(([, method]) => !only || method ==
 const results = {};
 
 let pending = null;
+let pendingId = null;
+let nextRequestId = 200;
 let index = 0;
 let done = false;
 
@@ -47,13 +49,15 @@ const child = spawn("codex", ["app-server"], { stdio: ["pipe", "pipe", "pipe"] }
 let buffer = "";
 let stderr = "";
 
-const timer = setTimeout(() => finish(), 240000);
+// A report runs during boot and must never hold provisioning hostage. Account
+// data can be refreshed later through the command agent after sign-in.
+const timer = setTimeout(() => finish(), 60000);
 
 function finish() {
   if (done) return;
   done = true;
   clearTimeout(timer);
-  const payload = only ? results[wanted[0]?.[0]] ?? null : results;
+  const payload = only ? results[wanted[0]?.[0]] ?? { error: results.error ?? "未收到 app-server 响应" } : results;
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   try {
     child.kill("SIGKILL");
@@ -80,7 +84,8 @@ function ask() {
       : method === "thread/list"
         ? { limit: 20 }
         : undefined;
-  send({ jsonrpc: "2.0", id: 200, method, params });
+  pendingId = nextRequestId++;
+  send({ jsonrpc: "2.0", id: pendingId, method, params });
 }
 
 child.on("error", () => finish());
@@ -102,11 +107,16 @@ child.stdout.on("data", (chunk) => {
       continue;
     }
     if (message.id === 1) {
+      if (message.error) {
+        results.error = message.error.message ?? "app-server 初始化失败";
+        finish();
+        continue;
+      }
       send({ jsonrpc: "2.0", method: "initialized" });
       ask();
       continue;
     }
-    if (message.id !== 200 || !pending) continue;
+    if (message.id !== pendingId || !pending) continue;
     const key = pending;
     pending = null;
     if (message.error) {

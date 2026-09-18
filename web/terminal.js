@@ -276,6 +276,89 @@ function setTerminalState(text) {
 let receivedBytes = 0;
 let pageError = "";
 
+// The terminal is a real work surface, not a status strip. Keep its height in
+// one CSS variable so xterm, the key row and the iPad keyboard all participate
+// in the same layout calculation.
+let terminalPanelWired = false;
+let terminalPanelMaximized = false;
+
+function fitTerminalViewport() {
+  if (!term || !opened) return;
+  try {
+    if (fitAddon) fitAddon.fit();
+    term.refresh(0, Math.max(0, term.rows - 1));
+    refreshTerminalState();
+  } catch (error) {
+    pageError = `终端尺寸测量失败：${error}`;
+    refreshTerminalState();
+  }
+}
+
+function updateKeyboardInset() {
+  const viewport = window.visualViewport;
+  if (!viewport) return;
+  const inset = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop));
+  document.documentElement.style.setProperty("--keyboard-offset", `${inset}px`);
+  window.requestAnimationFrame(fitTerminalViewport);
+}
+
+function wireTerminalPanel() {
+  if (terminalPanelWired) return;
+  terminalPanelWired = true;
+  const panel = document.getElementById("bottomPanel");
+  const handle = document.getElementById("terminalResizeHandle");
+  const fit = document.getElementById("terminalFit");
+  const maximize = document.getElementById("terminalMaximize");
+  if (!panel || !handle) return;
+
+  let saved = NaN;
+  try { saved = Number.parseInt(localStorage.getItem("pocketvm.terminalHeight"), 10); } catch (_) { /* private browsing */ }
+  if (Number.isFinite(saved)) document.documentElement.style.setProperty("--terminal-height", `${Math.max(190, Math.min(saved, window.innerHeight - 64))}px`);
+
+  let startY = 0;
+  let startHeight = 0;
+  handle.addEventListener("pointerdown", (event) => {
+    if (terminalPanelMaximized) return;
+    startY = event.clientY;
+    startHeight = panel.getBoundingClientRect().height;
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add("resizing-terminal");
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    const next = Math.max(190, Math.min(window.innerHeight - 64, startHeight + startY - event.clientY));
+    document.documentElement.style.setProperty("--terminal-height", `${Math.round(next)}px`);
+    fitTerminalViewport();
+  });
+  handle.addEventListener("pointerup", (event) => {
+    if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+    document.body.classList.remove("resizing-terminal");
+    const height = Math.round(panel.getBoundingClientRect().height);
+    try { localStorage.setItem("pocketvm.terminalHeight", String(height)); } catch (_) { /* private browsing */ }
+  });
+  handle.addEventListener("keydown", (event) => {
+    if (!["ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    const current = panel.getBoundingClientRect().height;
+    const delta = event.key === "ArrowUp" ? 48 : -48;
+    const next = Math.max(190, Math.min(window.innerHeight - 64, current + delta));
+    document.documentElement.style.setProperty("--terminal-height", `${Math.round(next)}px`);
+    fitTerminalViewport();
+  });
+  fit?.addEventListener("click", fitTerminalViewport);
+  maximize?.addEventListener("click", () => {
+    terminalPanelMaximized = !terminalPanelMaximized;
+    panel.classList.toggle("maximized", terminalPanelMaximized);
+    maximize.setAttribute("aria-pressed", terminalPanelMaximized ? "true" : "false");
+    window.requestAnimationFrame(fitTerminalViewport);
+  });
+  const viewport = window.visualViewport;
+  viewport?.addEventListener("resize", updateKeyboardInset);
+  viewport?.addEventListener("scroll", updateKeyboardInset);
+  window.addEventListener("resize", updateKeyboardInset);
+  updateKeyboardInset();
+}
+
 function formatBytes(count) {
   if (count < 1024) return `${count} 字节`;
   if (count < 1024 * 1024) return `${(count / 1024).toFixed(1)} KB`;

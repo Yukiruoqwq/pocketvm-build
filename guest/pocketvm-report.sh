@@ -104,16 +104,31 @@ report() {
   command -v codex >/dev/null 2>&1 || return 0
   version="$(codex --version 2>/dev/null | head -n1 | tr -d '\r\"')"
   post ready "{\"stage\":\"ready\",\"version\":\"${version:-unknown}\"}"
+  # The proxy must be ready before app-server is contacted. The service runs as
+  # root, while the authenticated CLI state belongs to codex; querying as root
+  # made every installation look signed out and returned an empty thread list.
+  setup_proxy
   # One app-server session answers all of it: models, usage limits and the
   # conversation list. Starting the server three times would cost more in the
   # emulated guest than the answers do.
   if [ -f "$LIB/pocketvm-app.mjs" ] && command -v node >/dev/null 2>&1; then
-    node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
+    export HTTPS_PROXY="${HTTPS_PROXY:-http://127.0.0.1:7890}"
+    export HTTP_PROXY="${HTTP_PROXY:-http://127.0.0.1:7890}"
+    export ALL_PROXY="${ALL_PROXY:-socks5://127.0.0.1:7890}"
+    export NO_PROXY="${NO_PROXY:-localhost,127.0.0.1,10.0.2.2}"
+    if id codex >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
+      runuser -u codex -- env HOME=/home/codex HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" ALL_PROXY="$ALL_PROXY" NO_PROXY="$NO_PROXY" \
+        node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
+    elif id codex >/dev/null 2>&1 && command -v sudo >/dev/null 2>&1; then
+      sudo -u codex -H env HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" ALL_PROXY="$ALL_PROXY" NO_PROXY="$NO_PROXY" \
+        node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
+    else
+      node "$LIB/pocketvm-app.mjs" > /tmp/pocketvm-report.json 2>/dev/null || true
+    fi
     if [ -s /tmp/pocketvm-report.json ]; then
       post report "$(cat /tmp/pocketvm-report.json)"
     fi
   fi
-  setup_proxy
   upload_boot_files
 }
 

@@ -101,12 +101,52 @@ struct VMConfiguration: Codable, Equatable {
     /// Clamp values that would otherwise make QEMU fail in a confusing way.
     func validated() -> VMConfiguration {
         var copy = self
+        copy.name = String(copy.name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        if copy.name.isEmpty { copy.name = "VM" }
         copy.cpuCount = min(max(copy.cpuCount, 1), 16)
         // iOS refuses large allocations long before the hardware runs out, and
         // a refusal inside the emulator is much harder to read than a clamp.
         copy.memoryMiB = min(max(copy.memoryMiB, 256), 8192)
         copy.jitCacheMiB = min(max(copy.jitCacheMiB, 16), 4096)
+        copy.boot.kernel = Self.safeRelativePath(copy.boot.kernel)
+        copy.boot.initrd = Self.safeRelativePath(copy.boot.initrd)
+        copy.drives = copy.drives.compactMap { drive in
+            guard let path = Self.safeRelativePath(drive.path), !path.isEmpty else { return nil }
+            var drive = drive
+            drive.path = path
+            if let format = drive.format?.lowercased(), ["raw", "qcow2", "vmdk", "vdi"].contains(format) {
+                drive.format = format
+            } else {
+                drive.format = nil
+            }
+            if let node = drive.nodeName,
+               !node.isEmpty, node.count <= 64,
+               node.allSatisfy({ $0.isLetter || $0.isNumber || "._-".contains($0) }) {
+                drive.nodeName = node
+            } else {
+                drive.nodeName = nil
+            }
+            return drive
+        }
+        copy.network.portForwards = copy.network.portForwards.compactMap { forward in
+            guard (1...65535).contains(forward.hostPort),
+                  (1...65535).contains(forward.guestPort),
+                  ["tcp", "udp"].contains(forward.protocolName.lowercased()) else { return nil }
+            var forward = forward
+            forward.protocolName = forward.protocolName.lowercased()
+            return forward
+        }
         return copy
+    }
+
+    private static func safeRelativePath(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix("/"), !trimmed.contains(":") else { return nil }
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: true)
+        guard !parts.isEmpty,
+              !parts.contains(where: { $0 == ".." || $0 == "." }) else { return nil }
+        return parts.joined(separator: "/")
     }
 }
 

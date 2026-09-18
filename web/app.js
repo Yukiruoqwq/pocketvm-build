@@ -1212,6 +1212,7 @@ function wireChrome() {
   const setBottomPanel = (open) => {
     $("bottomPanel").hidden = !open;
     $("menuBottomPanel").checked = open;
+    if (typeof wireTerminalPanel === "function") wireTerminalPanel();
     // The emulator is attached the first time it is actually visible: opened
     // while hidden it measures zero and draws nothing.
     if (open && typeof openTerminal === "function") requestAnimationFrame(() => openTerminal());

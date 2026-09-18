@@ -150,7 +150,10 @@ struct WebUIView: UIViewRepresentable {
             case "openURL":
                 // The frontend supplies the URL it was shown, and the view
                 // decides what the system is allowed to open.
-                if let text = payload?["url"] as? String, let url = URL(string: text) {
+                if let text = payload?["url"] as? String,
+                   let url = URL(string: text),
+                   ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
+                   url.host != nil {
                     model.openURL?(url)
                 }
 
@@ -182,7 +185,10 @@ struct WebUIView: UIViewRepresentable {
             case "setProxy":
                 // Validated rather than trusted: what is stored ends up inside a
                 // command the guest runs.
-                if let url = payload?["url"] as? String {
+                if let url = payload?["url"] as? String,
+                   let parsed = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   ["https", "http"].contains(parsed.scheme?.lowercased() ?? ""),
+                   parsed.host != nil {
                     model.setProxySubscription(url)
                     reply(["action": "proxy", "payload": ["url": model.proxySubscription()]])
                 }

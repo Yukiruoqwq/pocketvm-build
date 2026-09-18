@@ -174,25 +174,47 @@ final class SeedServer {
         onRequest?(String(requestLine))
 
         let body = Data(request[separator.upperBound...])
-        if requestLine.hasPrefix("PUT ") || path.hasPrefix("/upload/") {
+        let method = requestLine.split(separator: " ").first.map(String.init) ?? ""
+        guard ["GET", "POST", "PUT"].contains(method) else {
+            send(connection, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("method not allowed\n".utf8))
+            return
+        }
+        if method == "PUT" || path.hasPrefix("/upload/") {
+            guard method == "PUT" else {
+                send(connection, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("upload requires PUT\n".utf8))
+                return
+            }
+            guard body.count <= Self.uploadLimit else {
+                send(connection, status: "413 Payload Too Large", contentType: "text/plain", body: Data("upload too large\n".utf8))
+                return
+            }
             let name = path.hasPrefix("/upload/")
                 ? String(path.dropFirst("/upload/".count))
                 : String(path.dropFirst())
+            guard Self.safeUploadName(name) else {
+                send(connection, status: "400 Bad Request", contentType: "text/plain", body: Data("invalid upload name\n".utf8))
+                return
+            }
             onUpload?(name, body)
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
         }
 
-        if requestLine.hasPrefix("POST ") {
+        if method == "POST" {
+            guard body.count <= Self.reportLimit else {
+                send(connection, status: "413 Payload Too Large", contentType: "text/plain", body: Data("report too large\n".utf8))
+                return
+            }
             onPost?(path, body)
             send(connection, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}\n".utf8))
             return
         }
 
+        let dynamic = resources[path] == nil ? onDynamicResource?(path) : nil
         let resource = resources[path]
-            ?? onDynamicResource?(path)
+            ?? dynamic
             ?? Resource(contentType: "text/plain; charset=utf-8", body: Data("not found\n".utf8))
-        let known = resources[path] != nil || onDynamicResource?(path) != nil
+        let known = resources[path] != nil || dynamic != nil
         let status = known ? "200 OK" : "404 Not Found"
         send(connection, status: status, contentType: resource.contentType, body: resource.body)
     }
@@ -216,12 +238,13 @@ final class SeedServer {
               let headerText = String(data: request[request.startIndex..<separator.lowerBound], encoding: .utf8) else {
             return false
         }
-        var length = 0
+        var length: Int?
         for line in headerText.split(separator: "\r\n") {
             let parts = line.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             guard parts.count == 2, parts[0].lowercased() == "content-length" else { continue }
-            length = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            length = Int(parts[1].trimmingCharacters(in: .whitespaces))
         }
+        guard let length, length >= 0 else { return true }
         return request.count - request.distance(from: request.startIndex, to: separator.upperBound) >= length
     }
 
@@ -247,7 +270,13 @@ final class SeedServer {
         let parts = line.split(separator: " ")
         guard parts.count >= 2 else { return "/" }
         let target = String(parts[1])
-        return target.split(separator: "?").first.map(String.init) ?? target
+        let path = target.split(separator: "?").first.map(String.init) ?? target
+        guard path.hasPrefix("/"), !path.contains(".."), !path.contains("\\") else { return "/" }
+        return path
+    }
+
+    private static func safeUploadName(_ name: String) -> Bool {
+        !name.isEmpty && name.count <= 128 && !name.contains("..") && !name.contains("/") && !name.contains("\\")
     }
 }
 

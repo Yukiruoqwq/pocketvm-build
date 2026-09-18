@@ -230,6 +230,7 @@
   </aside>
 
   <section class="bottom-panel" id="bottomPanel" hidden>
+    <div class="terminal-resize-handle" id="terminalResizeHandle" role="separator" aria-label="调整终端高度" tabindex="0"></div>
     <header class="bottom-head">
       <button class="tab-item active" type="button">终端</button>
       <!-- What the console itself knows: connected or not, how many bytes the
@@ -237,6 +238,12 @@
            panel with "收到 45 KB" on it is a rendering problem; a blank panel
            with "收到 0 字节" is a console that never arrived. -->
       <span class="terminal-state" id="terminalState">未连接</span>
+      <button class="icon-btn" type="button" id="terminalFit" title="适应终端大小">
+        <svg viewBox="0 0 16 16"><path d="M3 6V3h3M10 3h3v3M13 10v3h-3M6 13H3v-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button class="icon-btn" type="button" id="terminalMaximize" title="最大化终端" aria-pressed="false">
+        <svg viewBox="0 0 16 16"><path d="M3 6V3h3M10 3h3v3M13 10v3h-3M6 13H3v-3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
       <button class="icon-btn" type="button" id="closeBottomPanel" title="隐藏底部面板">
         <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       </button>

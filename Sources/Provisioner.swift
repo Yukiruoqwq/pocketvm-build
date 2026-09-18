@@ -190,10 +190,31 @@ final class Provisioner: ObservableObject {
 
     func markProvisioned() {
         guard !state.completed else { return }
+        let documents = VMConfiguration.documentsDirectory
+        let kernel = documents.appendingPathComponent(image.directBoot.kernel)
+        let initrd = documents.appendingPathComponent(image.directBoot.initrd)
+        let kernelSize: Int = {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: kernel.path),
+                  let number = attributes[.size] as? NSNumber else { return 0 }
+            return number.intValue
+        }()
+        let initrdSize: Int = {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: initrd.path),
+                  let number = attributes[.size] as? NSNumber else { return 0 }
+            return number.intValue
+        }()
+        guard kernelSize > 1 << 20, initrdSize > 1 << 20 else {
+            // POCKETVM_READY is emitted before the guest upload service can
+            // finish. Treating it as final here made the next boot skip the
+            // installer and fall back to an unverified firmware path.
+            stage = .failed("客户机已安装，但启动内核尚未完整上传；重启后会继续修复")
+            onLog?("provisioning completion deferred: kernel/initrd are missing or too small")
+            return
+        }
         state.completed = true
-        // The disk has been carrying its final size since this boot, so the
-        // resize does not need to be attempted again.
-        state.capacityApplied = true
+        // Keep capacityApplied false until a successful monitor reply is
+        // observed. Retrying an idempotent resize is safer than remembering a
+        // failed resize and booting a smaller filesystem forever.
         state.completedAt = Date()
         state.write()
         stage = .ready
@@ -260,11 +281,16 @@ final class Provisioner: ObservableObject {
     /// is padded here rather than relying on the emulator to do it.
     private func installUEFIVariables() throws {
         let destination = VMConfiguration.documentsDirectory.appendingPathComponent("efi_vars.fd")
-        if FileManager.default.fileExists(atPath: destination.path) { return }
         guard let template = Bundle.main.url(forResource: "edk2-arm-vars", withExtension: "fd", subdirectory: "qemu") else {
             throw VMConfigurationError.missingFile("qemu/edk2-arm-vars.fd")
         }
         let flashSize = 64 * 1024 * 1024
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: destination.path),
+           (attributes[.size] as? NSNumber)?.intValue == flashSize {
+            return
+        }
+        // A killed copy can leave a short variable store behind. Rebuild it
+        // before QEMU sees it; a truncated pflash silently loses boot state.
         var contents = try Data(contentsOf: template)
         if contents.count < flashSize {
             contents.append(Data(repeating: 0xFF, count: flashSize - contents.count))

@@ -333,7 +333,16 @@ final class QEMUHost {
         }
         data.withUnsafeBytes { raw in
             guard let base = raw.baseAddress else { return }
-            _ = Darwin.write(serialHostFd, base, raw.count)
+            var offset = 0
+            while offset < raw.count {
+                let written = Darwin.write(serialHostFd, base.advanced(by: offset), raw.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if errno != EINTR {
+                    log("console: write failed after \(offset)/\(raw.count) bytes, errno \(errno)")
+                    break
+                }
+            }
         }
     }
 
@@ -417,10 +426,15 @@ final class QEMUHost {
 
     private func requireFile(_ relative: String) throws -> String {
         let url = resolve(relative)
-        guard FileManager.default.fileExists(atPath: url.path) else {
+        let documentsURL = documents().standardizedFileURL
+        let candidate = url.standardizedFileURL
+        let prefix = documentsURL.path.hasSuffix("/") ? documentsURL.path : documentsURL.path + "/"
+        guard candidate.path == documentsURL.path || candidate.path.hasPrefix(prefix),
+              FileManager.default.fileExists(atPath: candidate.path),
+              !FileManager.default.isDirectory(atPath: candidate.path) else {
             throw HostError.imageMissing(url.path)
         }
-        return url.path
+        return candidate.path
     }
 
     private func buildArguments(

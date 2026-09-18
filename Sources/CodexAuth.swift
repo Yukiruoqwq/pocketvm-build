@@ -68,6 +68,11 @@ final class CodexAuth: ObservableObject {
         timer = nil
     }
 
+    func fail(_ reason: String) {
+        cancel()
+        state = .failed(reason)
+    }
+
     /// One line of guest console output.
     func ingest(line: String) {
         let text = line.trimmingCharacters(in: .whitespacesAndNewlines)

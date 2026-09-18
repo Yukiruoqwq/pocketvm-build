@@ -137,10 +137,13 @@ final class VMModel: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.appendStatus("系统准备完成，登录口令 \(state.password)")
-                // The guest only reports this after `codex --version` worked
-                // inside it, so the machine is usable at the same moment.
-                self.markCodexReady()
-                self.refreshCodexStatus()
+                // Installation only proves that the binary was written. The
+                // running guest still has to start its report service and CLI;
+                // `/ready` is the sole transition into the usable state.
+                if self.isRunning {
+                    self.bootDetail = "正在启动 Codex CLI"
+                    self.pushProvisionState()
+                }
             }
         }
 
@@ -321,6 +324,10 @@ final class VMModel: ObservableObject {
     /// Saves one task. The id is generated here, not trusted from the page.
     func upsertAutomation(_ task: [String: Any]) {
         var entry = task
+        guard let title = task["title"] as? String,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              title.count <= 240 else { return }
+        entry["title"] = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(240))
         let id = (task["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString
         entry["id"] = id
         entry["status"] = entry["status"] as? String ?? "active"
@@ -340,6 +347,7 @@ final class VMModel: ObservableObject {
     }
 
     func setAutomationStatus(id: String, status: String) {
+        guard ["active", "paused", "completed"].contains(status) else { return }
         guard let index = automations.firstIndex(where: { $0["id"] as? String == id }) else { return }
         automations[index]["status"] = status
         persistAutomations()
@@ -356,6 +364,8 @@ final class VMModel: ObservableObject {
     /// the one the guest can act on: the text goes to the shell, where the user
     /// can see it arrive in the terminal.
     func handlePrompt(_ text: String) {
+        let text = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000))
+        guard !text.isEmpty else { return }
         transcript.append(["role": "user", "text": text])
         pushMessages()
         guard isRunning else {
@@ -428,6 +438,12 @@ final class VMModel: ObservableObject {
     /// session: the models, the usage limits and the conversation list.
     private func apply(report body: Data) {
         guard let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return }
+        if let error = object["error"] as? String {
+            models = []
+            modelsError = error
+            append(diagnostic: "guest app-server unavailable: \(error)")
+            pushModels()
+        }
         if let list = object["models"] as? [[String: Any]] {
             models = list
             modelsError = nil
@@ -515,6 +531,8 @@ final class VMModel: ObservableObject {
 
     private func startPrepared() async {
         diagnostics.removeAll()
+        consoleBuffer.removeAll(keepingCapacity: true)
+        probeArmed = false
         do {
             let prepared = try await provisioner.prepare()
             configuration = prepared.configuration
@@ -525,8 +543,9 @@ final class VMModel: ObservableObject {
             bootDetail = provisioner.isProvisioned ? "正在启动 QEMU" : ""
             status = "running"
             appendStatus("虚拟机已启动")
-            startProbeLoop()
-            startBootNudge()
+            // Readiness is reported by the guest agent over the helper HTTP
+            // channel. Starting blind serial probes here used to type commands
+            // into GRUB, cloud-init and login shells at unpredictable times.
         } catch {
             isRunning = false
             codexReady = false
@@ -631,8 +650,8 @@ final class VMModel: ObservableObject {
         }
         // The agent polls every couple of seconds, so "not live at this exact
         // instant" is normal while the emulated guest is waking up. Queue the
-        // command as soon as it appears instead of falling back to a serial
-        // shell that may not exist. The serial path stays as a last resort.
+        // command as soon as it appears. Serial fallback was removed because it
+        // races the boot/login shell and corrupts both the terminal and auth.
         append(diagnostic: "auth: 等待客户机代理")
         let wait = subcommand == "start" ? 20 : 5
         Task { [weak self] in
@@ -645,9 +664,8 @@ final class VMModel: ObservableObject {
                 }
             }
             guard let self else { return }
-            self.append(diagnostic: "auth: 没有代理，改用串口")
-            self.auth.noteSent("serial \(subcommand)")
-            self.host.writeToConsole(command + "\n")
+            self.append(diagnostic: "auth: 客户机命令代理未就绪")
+            self.auth.fail("客户机命令代理未就绪，请确认系统已完全启动后重试")
         }
     }
 
@@ -771,7 +789,13 @@ final class VMModel: ObservableObject {
         // exactly-printed marker never compared equal — the machine sat at
         // 正在启动 Codex CLI while its disk was being written the whole time.
         if line.trimmingCharacters(in: .whitespacesAndNewlines) == "POCKETVM_CODEX_READY" {
-            markCodexReady()
+            // This legacy serial marker only says the executable exists. Keep
+            // the gate in the CLI-starting phase until the HTTP report confirms
+            // the process and authenticated app channel are alive.
+            if provisioner.isProvisioned {
+                bootDetail = "正在启动 Codex CLI"
+                pushProvisionState()
+            }
             return
         }
         guard provisioner.isProvisioned, !codexReady else { return }
@@ -787,7 +811,6 @@ final class VMModel: ObservableObject {
         // console, so the probe is answered as soon as it is typed.
         if line.contains("@pocketvm:") {
             append(diagnostic: "shell prompt seen")
-            sendProbe()
             return
         }
         // Anything else only shortens the wait before the loop starts typing.
@@ -813,27 +836,11 @@ final class VMModel: ObservableObject {
     /// so the machine would sit there for ever. Enter is harmless everywhere
     /// else on the way up, and it stops as soon as the kernel has been heard.
     private func startBootNudge() {
+        // Retained as a compatibility hook for older call sites. Boot input is
+        // always user initiated now; automatic carriage returns can corrupt a
+        // boot loader or an installer prompt.
         bootNudgeTask?.cancel()
-        // Only for a machine that is already installed. A first boot is run by
-        // cloud-init with nothing to confirm, and pressing keys at a machine
-        // that is setting itself up is exactly the kind of help it does not
-        // need.
-        guard provisioner.isProvisioned else { return }
-        bootNudgeTask = Task { [weak self] in
-            for attempt in 0..<5 {
-                let wait: Duration = attempt == 0 ? .seconds(6) : .seconds(14)
-                try? await Task.sleep(for: wait)
-                guard let self, self.isRunning, !self.codexReady else { return }
-                // The kernel has been heard from, so there is no menu left to
-                // dismiss and nothing to send.
-                if self.probeArmed { return }
-                // A carriage return, which is what a keyboard's Enter sends:
-                // the boot loader reads that, and a shell's terminal translates
-                // it exactly the same way.
-                self.host.writeToConsole("\r")
-                self.append(diagnostic: "boot nudge \(attempt + 1)")
-            }
-        }
+        bootNudgeTask = nil
     }
 
     /// Lines the firmware and the boot loader do not print.
@@ -850,25 +857,8 @@ final class VMModel: ObservableObject {
     }
 
     private func sendProbe() {
-        // Only a machine that is already installed has a Codex CLI to wait for.
-        // During the first run the guest is installing it, and overwriting the
-        // card's line there would hide the guest's own progress behind a label
-        // about a boot that has not happened yet.
-        if provisioner.isProvisioned, bootDetail != "正在启动 Codex CLI" {
-            bootDetail = "正在启动 Codex CLI"
-            pushProvisionState()
-        }
-        // A guest installed by this build reports its own boot over HTTP, so
-        // this is only the migration path: teach an older guest to do the same,
-        // and it will answer over the channel rather than through the terminal.
-        guard let base = provisioner.helperBaseURL else {
-            // No channel to teach: the old line at least still gets an answer
-            // from a guest that was already migrated by hand.
-            host.writeToConsole(Self.probeCommand + "\n")
-            return
-        }
-        append(diagnostic: "teaching the guest to report its own boot")
-        host.writeToConsole(bootstrapCommand(base: base) + "\n")
+        // Legacy compatibility hook. Readiness is reported by the guest agent;
+        // never write a blind probe into the serial console.
     }
 
     private func markCodexReady() {
@@ -897,22 +887,11 @@ final class VMModel: ObservableObject {
     /// has been heard from. Once it has, the retries are frequent; before that
     /// they are slow enough to stay out of the boot's way.
     private func startProbeLoop() {
+        // Kept as a lifecycle hook for older callers. The guest agent is the
+        // sole readiness authority; this method intentionally performs no
+        // serial writes.
         probeTask?.cancel()
-        probeArmed = false
-        probeTask = Task { [weak self] in
-            var attempts = 0
-            while !Task.isCancelled {
-                let armed = self?.probeArmed ?? false
-                // The first blind attempt is early on purpose: the gate should
-                // not depend on the guest printing anything the host recognises,
-                // and the command is harmless if the shell is not there yet.
-                let wait: Duration = armed ? .seconds(10) : (attempts < 1 ? .seconds(45) : .seconds(60))
-                try? await Task.sleep(for: wait)
-                guard let self, self.isRunning, !self.codexReady else { return }
-                attempts += 1
-                self.sendProbe()
-            }
-        }
+        probeTask = nil
     }
 
     private func append(console text: String) {
