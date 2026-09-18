@@ -106,6 +106,13 @@ final class QEMUHost {
     private var emulatorFinished = true
     private var loggedConsoleRead = false
     private var loggedConsoleWrite = false
+    /// The guest's own serial output, kept on disk.
+    ///
+    /// The frontend draws the machine; this is the text the machine printed.
+    /// When a boot stalls before the kernel, that text is the only evidence of
+    /// where it stopped, and it has to survive the app being killed.
+    private let transcriptQueue = DispatchQueue(label: "com.pocketvm.transcript", qos: .utility)
+    private var transcriptBytes = 0
 
     /// The monitor is one connection. The disk resize at boot, the request that
     /// stops the machine and the periodic screen grabs all travel over it, and
@@ -296,6 +303,31 @@ final class QEMUHost {
         FileManager.default.temporaryDirectory.appendingPathComponent("pocketvm-screen.png").path
     }
 
+    private var transcriptPath: String {
+        documents().appendingPathComponent("console.log").path
+    }
+
+    /// Appends what the guest said. Rotated at half a megabyte: a boot that
+    /// works is not interesting, the one that hangs is.
+    private func appendTranscript(_ data: Data) {
+        transcriptQueue.async { [weak self] in
+            guard let self else { return }
+            let url = URL(fileURLWithPath: self.transcriptPath)
+            if self.transcriptBytes > 512 * 1024 {
+                try? Data().write(to: url)
+                self.transcriptBytes = 0
+            }
+            if let handle = try? FileHandle(forWritingTo: url) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: url)
+            }
+            self.transcriptBytes += data.count
+        }
+    }
+
     private func captureScreenFrame() {
         guard isRunning, qmpHostFd >= 0 else { return }
         // Skips the frame rather than waiting: the monitor may be busy with the
@@ -422,6 +454,7 @@ final class QEMUHost {
             }
             self.noteConsoleRead(count, bytes: buffer)
             let slice = buffer[0..<count]
+            self.appendTranscript(Data(slice))
             self.onConsoleBytes?(Data(slice))
             let text = String(decoding: slice, as: UTF8.self)
             self.onConsoleOutput?(text)

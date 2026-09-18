@@ -71,6 +71,8 @@ final class VMModel: ObservableObject {
     private var consoleBuffer = Data()
     private var observers: [AnyCancellable] = []
     private var probeTask: Task<Void, Never>?
+    /// Presses Enter for a boot loader that is waiting for a key.
+    private var bootNudgeTask: Task<Void, Never>?
     /// True from the moment stopping is asked for until the emulator has
     /// actually exited. A start during that window is what used to crash the
     /// app: QEMU cannot be initialised twice in one process.
@@ -512,6 +514,7 @@ final class VMModel: ObservableObject {
             status = "running"
             appendStatus("虚拟机已启动")
             startProbeLoop()
+            startBootNudge()
         } catch {
             isRunning = false
             codexReady = false
@@ -539,6 +542,8 @@ final class VMModel: ObservableObject {
         appendStatus("正在请求客户机关机…")
         probeTask?.cancel()
         probeTask = nil
+        bootNudgeTask?.cancel()
+        bootNudgeTask = nil
         host.requestPowerDown()
         pushProvisionState()
 
@@ -676,8 +681,37 @@ final class VMModel: ObservableObject {
         }
         // Anything else only shortens the wait before the loop starts typing.
         if bootDetail != "正在启动 Codex CLI", lineLooksLikeGuestBoot(line) {
-            if !probeArmed { append(diagnostic: "guest boot output seen") }
+            if !probeArmed {
+                append(diagnostic: "guest boot output seen")
+                // The kernel is running, so the boot loader is behind us and
+                // there is nothing left to nudge.
+                bootNudgeTask?.cancel()
+                bootNudgeTask = nil
+            }
             probeArmed = true
+        }
+    }
+
+    /// Presses Enter for the machine once it has had time to reach its boot
+    /// menu.
+    ///
+    /// Debian's GRUB stops at the menu instead of counting down when the last
+    /// shutdown was not clean, and a VM that was killed — by a reinstall, by
+    /// iOS, by the app being swiped away — is exactly that case. Nothing else
+    /// can press a key: the frontend shows the display without an input path,
+    /// so the machine would sit there for ever. Enter is harmless everywhere
+    /// else on the way up, and it stops as soon as the kernel has been heard.
+    private func startBootNudge() {
+        bootNudgeTask?.cancel()
+        bootNudgeTask = Task { [weak self] in
+            for attempt in 0..<5 {
+                let wait: Duration = attempt == 0 ? .seconds(6) : .seconds(14)
+                try? await Task.sleep(for: wait)
+                guard let self, self.isRunning, !self.codexReady else { return }
+                if self.probeArmed { return }
+                self.host.writeToConsole("\n")
+                self.append(diagnostic: "boot nudge \(attempt + 1)")
+            }
         }
     }
 
@@ -719,6 +753,8 @@ final class VMModel: ObservableObject {
         probeArmed = false
         probeTask?.cancel()
         probeTask = nil
+        bootNudgeTask?.cancel()
+        bootNudgeTask = nil
         append(diagnostic: "guest answered the readiness probe")
         pushProvisionState()
         // The machine is usable, so the account's model list can be asked for.
