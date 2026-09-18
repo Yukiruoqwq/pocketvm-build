@@ -82,18 +82,84 @@ else
 fi
 
 # The subscription owns the proxy list; the listening ports and the controller
-# are ours, and appending them last wins over anything the subscription set.
-if ! grep -q '^# pocketvm-port' /etc/mihomo/config.yaml; then
-  sed -i '/^mixed-port:/d;/^socks-port:/d;/^port:/d;/^allow-lan:/d;/^external-controller:/d;/^log-level:/d' \
-    /etc/mihomo/config.yaml
-  cat >>/etc/mihomo/config.yaml <<EOF
+# are ours. It also commonly ships a TUN block, which cannot work in this guest:
+# there is no usable TUN device, and mihomo exits before it ever opens the mixed
+# port. DNS that listens on port 53 can fail the same way under systemd-resolved.
+#
+# Everything is rewritten on every run, not only the first one: a guest that
+# already has the old port marker must still lose a TUN block added by a later
+# subscription, or its proxy comes back up dead after an update.
+sanitize_config() {
+  local conf=/etc/mihomo/config.yaml
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$conf" "$PORT" <<'PY'
+import re
+import sys
+
+path, port = sys.argv[1], sys.argv[2]
+skip = {
+    "tun", "dns", "mixed-port", "socks-port", "port", "allow-lan",
+    "external-controller", "log-level",
+}
+out = []
+skipping = False
+for line in open(path, encoding="utf-8", errors="replace"):
+    line = line.rstrip("\n")
+    match = re.match(r"^([^\s#][^:]*):", line)
+    if match:
+        key = match.group(1)
+        skipping = key in skip
+        if skipping:
+            continue
+    if not skipping:
+        out.append(line)
+while out and out[-1].strip() in ("", "..."):
+    out.pop()
+out += [
+    "",
+    "# pocketvm-port",
+    f"mixed-port: {port}",
+    "allow-lan: false",
+    "external-controller: 127.0.0.1:9090",
+    "log-level: warning",
+    "tun:",
+    "  enable: false",
+]
+open(path, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+  else
+    # Fallback for a guest without python3: the two blocks that stop mihomo on
+    # this image are removed, then the listener settings are appended.
+    awk '
+      BEGIN { skip = 0 }
+      /^[#]/ { print; next }
+      /^[^[:space:]#][^:]*:/ {
+        key = $0; sub(/:.*/, "", key)
+        skip = (key == "tun" || key == "dns" || key == "mixed-port" ||
+                key == "socks-port" || key == "port" || key == "allow-lan" ||
+                key == "external-controller" || key == "log-level")
+        if (skip) next
+      }
+      !skip { print }
+    ' "$conf" >"$conf.tmp" && mv "$conf.tmp" "$conf"
+    cat >>"$conf" <<EOF
 
 # pocketvm-port
 mixed-port: $PORT
 allow-lan: false
 external-controller: 127.0.0.1:9090
 log-level: warning
+tun:
+  enable: false
 EOF
+  fi
+}
+cp /etc/mihomo/config.yaml /etc/mihomo/config.yaml.bak 2>/dev/null || true
+sanitize_config
+
+if ! /usr/local/bin/mihomo -d /etc/mihomo -f /etc/mihomo/config.yaml -t; then
+  say "mihomo 配置测试失败；原订阅文件已备份到 /etc/mihomo/config.yaml.bak"
+  exit 1
 fi
 
 say "注册服务"
@@ -126,7 +192,8 @@ for _ in $(seq 1 30); do
   sleep 3
 done
 if [ "$ready" != "1" ]; then
-  say "代理进程起来了但连不通，看 journalctl -u mihomo -n 40"
+  say "代理进程起来了但连不通，日志如下"
+  journalctl -u mihomo -n 40 --no-pager 2>/dev/ttyAMA0 || true
   exit 1
 fi
 
