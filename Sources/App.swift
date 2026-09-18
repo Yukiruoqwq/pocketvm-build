@@ -685,11 +685,18 @@ final class VMModel: ObservableObject {
     /// else on the way up, and it stops as soon as the kernel has been heard.
     private func startBootNudge() {
         bootNudgeTask?.cancel()
+        // Only for a machine that is already installed. A first boot is run by
+        // cloud-init with nothing to confirm, and pressing keys at a machine
+        // that is setting itself up is exactly the kind of help it does not
+        // need.
+        guard provisioner.isProvisioned else { return }
         bootNudgeTask = Task { [weak self] in
             for attempt in 0..<5 {
                 let wait: Duration = attempt == 0 ? .seconds(6) : .seconds(14)
                 try? await Task.sleep(for: wait)
                 guard let self, self.isRunning, !self.codexReady else { return }
+                // The kernel has been heard from, so there is no menu left to
+                // dismiss and nothing to send.
                 if self.probeArmed { return }
                 // A carriage return, which is what a keyboard's Enter sends:
                 // the boot loader reads that, and a shell's terminal translates
