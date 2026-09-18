@@ -375,7 +375,7 @@ final class VMModel: ObservableObject {
         provisioner.channel.request(method, params) { [weak self] message in
             if let error = message["error"] as? [String: Any] {
                 self?.appendStatus(error["message"] as? String ?? "协议请求失败")
-                self?.promptInFlight = false
+                if ["turn/start", "thread/start", "thread/resume"].contains(method) { self?.promptInFlight = false }
                 if method == "account/login/start" { self?.auth.fail(error["message"] as? String ?? "登录失败") }
                 return
             }
