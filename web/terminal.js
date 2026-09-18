@@ -19,6 +19,10 @@ const termBridge = {
 let term = null;
 let fitAddon = null;
 let opened = false;
+/// The first write is the one worth reporting: everything before the panel is
+/// opened is buffered, so "the console is empty" and "the bytes never reached
+/// the page" look identical from here.
+let loggedFirstWrite = false;
 /// Output that arrived before the panel was ever on screen. The console starts
 /// printing at boot, long before anyone opens it, so throwing that away would
 /// leave the panel empty exactly when somebody finally looks.
@@ -218,8 +222,25 @@ function terminalReceive(payload) {
     }
     return;
   }
+  if (!loggedFirstWrite) {
+    loggedFirstWrite = true;
+    termBridge.send("note", {
+      text: `terminal first write ${bytes.length} bytes at ${term.cols}x${term.rows}`,
+    });
+  }
   term.write(bytes);
 }
+
+// Anything the page throws is otherwise invisible from the host: the panel just
+// stays blank and there is nothing to read afterwards.
+window.addEventListener("error", (event) => {
+  termBridge.send("note", {
+    text: `page error ${event.message} @ ${event.filename}:${event.lineno}`,
+  });
+});
+window.addEventListener("unhandledrejection", (event) => {
+  termBridge.send("note", { text: `page rejection ${event.reason}` });
+});
 
 function setTerminalState(text) {
   const el = document.getElementById("terminalState");
