@@ -133,6 +133,9 @@ let automationFilter = "all";
 let automationDraft = null;
 /// Review only: `?gate=…` in the browser preview picks a card to look at.
 let forcedGate = null;
+/// The gate stays up until the host has said what the machine is doing: the
+/// sample state below is the preview's, not the device's.
+let provisionKnown = preview;
 
 const settingsPages = [
   { id: "general", title: "常规" },
@@ -630,6 +633,7 @@ function gateStep() {
 /// the app, and it only happens once the guest's Codex CLI has answered.
 function gatePhase() {
   if (preview && forcedGate) return forcedGate === "entered" ? "ready" : forcedGate;
+  if (!provisionKnown) return "waiting";
   const provision = state.provision;
   if (!provision.provisioned) return provision.busy ? "installing" : "install";
   if (provision.running) return provision.codexReady ? "ready" : "starting";
@@ -713,6 +717,14 @@ function renderGate() {
   gate.classList.remove("leaving");
   document.body.classList.remove("entered");
 
+  // Nothing to say yet: the glass is up, the card is empty until the host
+  // answers. Rendering the preview's sample state here would flash the wrong
+  // machine on screen.
+  if (phase === "waiting") {
+    $("vmGateCard").innerHTML = "";
+    return;
+  }
+
   const spec = gateCard(phase);
   const card = $("vmGateCard");
   card.innerHTML = "";
@@ -752,7 +764,13 @@ function renderGate() {
 // ---------------------------------------------------------------- lifecycle
 
 function applyProvisionState(payload) {
-  state.provision = { ...state.provision, ...payload };
+  provisionKnown = true;
+  const next = { ...state.provision, ...payload };
+  // The host only sends a fraction while a download or a checksum is running.
+  // Anything else means the bar goes back to indeterminate instead of freezing
+  // at the last number it saw.
+  if (payload.fraction === undefined) next.fraction = undefined;
+  state.provision = next;
   if (!state.threads.length) renderThreads(payload.busy);
   renderPlan();
   renderOutputs();
