@@ -825,7 +825,7 @@ function rowsFor(page) {
           const open = el("button", "btn", "在 iPad 打开");
           open.addEventListener("click", () => bridge.send("openURL", { url: auth.url }));
           const copy = el("button", "btn", "复制链接");
-          copy.addEventListener("click", () => bridge.send("copy", { text: `${auth.url}\n${auth.code ?? ""}` }));
+          copy.addEventListener("click", () => bridge.send("copy", { text: auth.url }));
           wrap.appendChild(open);
           wrap.appendChild(copy);
           return wrap;
