@@ -709,7 +709,10 @@ final class VMModel: ObservableObject {
                 try? await Task.sleep(for: wait)
                 guard let self, self.isRunning, !self.codexReady else { return }
                 if self.probeArmed { return }
-                self.host.writeToConsole("\n")
+                // A carriage return, which is what a keyboard's Enter sends:
+                // the boot loader reads that, and a shell's terminal translates
+                // it exactly the same way.
+                self.host.writeToConsole("\r")
                 self.append(diagnostic: "boot nudge \(attempt + 1)")
             }
         }

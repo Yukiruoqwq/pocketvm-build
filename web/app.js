@@ -1007,7 +1007,13 @@ function gateCard(phase) {
       title: "启动中",
       facts: [provision.image, provision.detail || "正在启动 QEMU"],
       progress: null,
-      actions: [{ label: "启动中", kind: "status" }],
+      // A boot can stop making progress — a boot loader waiting for a key, a
+      // disk that needs repairing — and the card is the only thing that can be
+      // tapped while it is up, so the way out has to be on it.
+      actions: [
+        { label: "停止", kind: "ghost", action: () => bridge.send("stop") },
+        { label: "启动中", kind: "status" },
+      ],
     };
   }
   return {
