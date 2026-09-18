@@ -220,7 +220,7 @@ final class VMModel: ObservableObject {
                 configuration = validated
                 pushConfiguration()
                 pushProvisionState()
-                appendStatus("已把 \(name) 加进虚拟机；重启客户机后可用。")
+                appendStatus("已添加 \(name)，重启后生效。")
             } catch {
                 appendStatus("添加磁盘失败：\(error)")
             }
@@ -230,6 +230,12 @@ final class VMModel: ObservableObject {
     func appendStatus(_ text: String) {
         transcript.append(["role": "status", "text": text])
         pushMessages()
+    }
+
+    /// A line the frontend wants in the host log. The page has no other way to
+    /// leave evidence behind.
+    func noteFromWeb(_ text: String) {
+        append(diagnostic: "web: \(text)")
     }
 
     // ------------------------------------------------------------- 定时任务
@@ -529,7 +535,7 @@ final class VMModel: ObservableObject {
             self.stopping = false
             self.status = "running"
             self.bootDetail = ""
-            self.appendStatus("模拟器没有退出。为了不让下一次启动把 App 弄崩，这里不强行清理；彻底退出 App 可以停掉它。")
+            self.appendStatus("模拟器没有退出；退出 App 可以停掉它。")
             self.pushProvisionState()
         }
     }

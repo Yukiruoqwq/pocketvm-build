@@ -253,6 +253,11 @@ struct WebUIView: UIViewRepresentable {
                 }
 
             case "terminalReady", "terminalOpened":
+                model.noteFromWeb(
+                    "terminal \(action == "terminalOpened" ? "opened" : "ready") "
+                        + "\(payload?["cols"] ?? "?")x\(payload?["rows"] ?? "?")"
+                        + " pending \(payload?["pending"] ?? "-")"
+                )
                 reply(["action": "terminalState",
                        "payload": ["text": model.isRunning ? "已连接" : "虚拟机未运行"]])
 
@@ -271,7 +276,13 @@ struct WebUIView: UIViewRepresentable {
             // guest-supplied string from becoming executable script.
             webView?.evaluateJavaScript(
                 "window.pocketvmReceive && window.pocketvmReceive(JSON.parse(\(jsStringLiteral(json))));"
-            )
+            ) { _, error in
+                // A push that never lands is invisible otherwise: the page looks
+                // idle and the only way to find out why is to say so.
+                if let error {
+                    model.noteFromWeb("push \((object["action"] as? String) ?? "?") failed: \(error.localizedDescription)")
+                }
+            }
         }
 
         private func jsStringLiteral(_ value: String) -> String {

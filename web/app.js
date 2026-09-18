@@ -409,7 +409,7 @@ function renderModelMenu() {
     // models this account can use, the menu says exactly that.
     const message = state.model.loading
       ? "正在获取模型…"
-      : state.model.error || "登录 Codex 后可获取模型";
+      : state.model.error || "未登录";
     list.appendChild(el("li", "model-menu-empty", message));
   }
   for (const entry of entries) {
@@ -429,7 +429,7 @@ function renderModelMenu() {
   efforts.innerHTML = "";
   const supported = supportedEfforts(model);
   if (!supported.length) {
-    efforts.appendChild(el("li", "model-menu-empty", "获取模型后可选择"));
+    efforts.appendChild(el("li", "model-menu-empty", "未登录"));
   }
   for (const effort of supported) {
     const row = el("li", null, effortLabel(effort));
@@ -740,8 +740,8 @@ function rowsFor(page) {
       },
       {
         label: "磁盘",
-        desc: `目标容量 ${provision.imageBytes} GiB，系统盘之外可再加镜像`,
-        control: () => button("添加磁盘…", "btn", "pickDisk"),
+        desc: `${provision.imageBytes} GiB`,
+        control: () => button("添加…", "btn", "pickDisk"),
       },
       {
         group: "操作",
@@ -784,23 +784,23 @@ function rowsFor(page) {
         label: "账号",
         // Straight from the guest's own app server, so it is the account the
         // CLI inside this machine is actually using.
-        desc: who || "客户机内的 Codex 还没有报告账号",
-        control: () => el("span", "value", account.planType || account.account?.planType || "—"),
+        desc: who,
+        control: () => el("span", "value", account.planType || account.account?.planType || ""),
       },
       {
         label: "登录状态",
-        desc: auth.state === "signedIn" ? "客户机内的 Codex 已登录" : "客户机内的 Codex 未登录",
+        desc: "",
         control: () => el("span", "value", auth.state === "signedIn" ? "已登录" : auth.state === "awaiting" ? "等待确认" : "未登录"),
       },
       {
         label: "登录",
         // The CLI runs inside the guest, so there is nothing to log in to until
         // the guest is up. Saying so beats a button that does nothing.
-        desc: running ? "会在这里显示设备代码和确认链接" : "需要先启动虚拟机，登录是在客户机里完成的",
+        desc: running ? "" : "虚拟机未运行",
         control: () =>
           running
             ? button("登录 Codex", "btn-primary", "codexLogin")
-            : button("启动虚拟机", "btn-primary", "start"),
+            : button("启动", "btn-primary", "start"),
       },
       {
         label: "模型",
@@ -812,7 +812,7 @@ function rowsFor(page) {
     if (auth.state === "awaiting") {
       rows.push({
         label: "一次性代码",
-        desc: "在能访问 auth.openai.com 的设备上打开下面的链接并输入它",
+        desc: "",
         control: () => {
           const copy = el("button", "btn", auth.code || "");
           copy.addEventListener("click", () => bridge.send("copy", { text: auth.code }));

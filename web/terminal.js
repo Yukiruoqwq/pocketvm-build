@@ -155,6 +155,13 @@ function openTerminal() {
     opened = true;
     if (termBridge.available) {
       termBridge.send("terminalReady", { cols: terminal.cols, rows: terminal.rows });
+      // The host logs this: it is the only way to tell "the panel never opened"
+      // apart from "the console bytes never arrived".
+      termBridge.send("terminalOpened", {
+        cols: terminal.cols,
+        rows: terminal.rows,
+        pending: pending.length,
+      });
       setTerminalState("已连接");
     } else {
       // Browser preview: something to look at so the emulator itself can be
