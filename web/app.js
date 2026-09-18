@@ -446,6 +446,11 @@ function applyModels(payload) {
       ? state.model.effort
       : model.defaultReasoningEffort ?? supported[0] ?? state.model.effort;
   }
+  if (model && !state.model.loading) {
+    state.model.id = model.id;
+    if (!supportsFast(model)) state.model.speed = "standard";
+    sendModelSelection();
+  }
   renderModelChip();
   if (!$("modelMenu").hidden) { renderModelMenu(); positionModelMenu(); }
   if (!$("settings").hidden) renderSettings();

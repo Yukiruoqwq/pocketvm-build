@@ -6,7 +6,9 @@ if ! /usr/bin/python3 -c 'import fusepy' 2>/dev/null && ! /usr/bin/python3 -c 'i
   apt-get -o DPkg::Lock::Timeout=600 install -y -qq python3-fusepy libfuse2t64 fuse3
 fi
 modprobe fuse
-install -d -o codex -g codex /home/codex/Shared
+if ! mountpoint -q /home/codex/Shared; then
+  install -d -o codex -g codex /home/codex/Shared
+fi
 /usr/bin/python3 - <<'PY'
 from pathlib import Path
 p = Path('/home/codex/AGENTS.md')
