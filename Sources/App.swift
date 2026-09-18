@@ -263,10 +263,10 @@ final class VMModel: ObservableObject {
     /// The guest's answer, as the one line the helper prints.
     private func noteModels(line: String) {
         guard let marker = line.range(of: "POCKETVM_MODELS") else { return }
-        let rest = String(line[marker.upperBound...]).trimmingCharacters(in: .whitespaces)
+        let rest = String(line[marker.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
         if rest.hasPrefix("FAILED") {
             models = []
-            modelsError = String(rest.dropFirst("FAILED".count)).trimmingCharacters(in: .whitespaces)
+            modelsError = String(rest.dropFirst("FAILED".count)).trimmingCharacters(in: .whitespacesAndNewlines)
             append(diagnostic: "model list unavailable: \(modelsError ?? "")")
             pushModels()
             return
@@ -393,7 +393,11 @@ final class VMModel: ObservableObject {
         // same string, and the guest's console echoes what is typed. Matching a
         // substring lifted the glass on the echo — milliseconds after the probe
         // was sent, before the guest had answered anything.
-        if line.trimmingCharacters(in: .whitespaces) == "POCKETVM_CODEX_READY" {
+        // Trimmed of newlines as well as spaces: the guest's tty ends every line
+        // with CR LF, and `.whitespaces` leaves that CR behind, so an
+        // exactly-printed marker never compared equal — the machine sat at
+        // 正在启动 Codex CLI while its disk was being written the whole time.
+        if line.trimmingCharacters(in: .whitespacesAndNewlines) == "POCKETVM_CODEX_READY" {
             markCodexReady()
             return
         }
@@ -409,11 +413,13 @@ final class VMModel: ObservableObject {
         // A shell prompt is the one line that proves something is reading the
         // console, so the probe is answered as soon as it is typed.
         if line.contains("@pocketvm:") {
+            append(diagnostic: "shell prompt seen")
             sendProbe()
             return
         }
         // Anything else only shortens the wait before the loop starts typing.
         if bootDetail != "正在启动 Codex CLI", lineLooksLikeGuestBoot(line) {
+            if !probeArmed { append(diagnostic: "guest boot output seen") }
             probeArmed = true
         }
     }
@@ -436,6 +442,7 @@ final class VMModel: ObservableObject {
             bootDetail = "正在启动 Codex CLI"
             pushProvisionState()
         }
+        append(diagnostic: "readiness probe sent")
         host.writeToConsole(Self.probeCommand + "\n")
     }
 
@@ -446,6 +453,7 @@ final class VMModel: ObservableObject {
         probeArmed = false
         probeTask?.cancel()
         probeTask = nil
+        append(diagnostic: "guest answered the readiness probe")
         pushProvisionState()
         // The machine is usable, so the account's model list can be asked for.
         // It may legitimately fail until the user signs in; that answer is
