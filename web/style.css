@@ -218,16 +218,6 @@ ul { margin: 0; padding: 0; list-style: none; }
 .composer { padding: 0 16px 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
 .composer-column { width: min(768px, 100%); margin: 0 auto; }
 
-/* New-thread page: the composer sits in the middle of the empty area at the
-   width the app uses for it (max-w-3xl, 48rem). */
-.conversation.is-home .messages { display: none; }
-.conversation.is-home .composer {
-  margin: auto;
-  width: min(768px, 100%);
-  padding-bottom: 0;
-}
-.conversation.is-home { justify-content: center; }
-
 .command-menu {
   position: fixed; z-index: 30;
   top: 52px; right: calc(var(--panel-w) + 16px);
@@ -897,3 +887,14 @@ body.entered .app { animation: vm-settle .45s ease; }
 .attachment-list { display: flex; gap: 6px; flex-wrap: wrap; max-height: 100px; overflow: auto; }
 .attachment-list:empty { display: none; }
 .attachment-chip { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--fg); background: var(--bg-raised); }
+
+.composer { flex: 0 0 auto; min-width: 0; width: 100%; box-sizing: border-box; }
+.composer-column { min-width: 0; }
+.composer textarea { display: block; box-sizing: border-box; min-width: 0; min-height: 46px; font: inherit; line-height: 22px; }
+.composer-bar { flex-wrap: wrap; }
+.composer-right { min-width: 0; max-width: 100%; }
+.composer-right .chip { white-space: nowrap; }
+.model-chip { min-width: 0; }
+#modelName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.send { flex: 0 0 auto; }
+@media (max-width: 700px) { .sidebar { display: none; } .app, .app.no-panel, .app.no-sidebar { grid-template-columns: 0 minmax(0, 1fr) 0; } .conversation { grid-column: 2; } .side-panel { display: none; } }

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const source = fs.readFileSync(require('node:path').join(__dirname, '../web/app.js'), 'utf8');
 function setup() {
   class Element {
-    constructor() { this.hidden = true; this.children = []; this.style = {}; this.attributes = {}; this.textContent = ''; this.value = ''; this.classList = { toggle() {}, add() {}, remove() {} }; }
+    constructor() { this.dataset = {}; this.hidden = true; this.children = []; this.style = {}; this.attributes = {}; this.textContent = ''; this.value = ''; this.classList = { toggle() {}, add() {}, remove() {} }; }
     appendChild(node) { this.children.push(node); return node; }
     replaceChildren() { this.children = []; }
     set innerHTML(value) { this.children = []; }
@@ -47,6 +47,26 @@ test('attachments remain until native host accepts the prompt', () => {
   assert.equal(get('attachmentList').children.length,1);
   receive({action:'promptState',payload:{busy:false}});
   assert.equal(get('attachmentList').children.length,1);
-  receive({action:'promptAccepted',payload:{}});
+  receive({action:'promptAccepted',payload:{text:'',attachments:['file-1']}});
   assert.equal(get('attachmentList').children.length,0);
+});
+
+test('send control becomes interrupt with empty input and steer with content', () => {
+  const {context,get,receive}=setup();
+  receive({action:'promptState',payload:{busy:true}});
+  assert.equal(get('sendBtn').attributes['aria-label'],'中断');
+  get('composerInput').value='change direction';
+  vm.runInContext('updateSendButton()',context);
+  assert.equal(get('sendBtn').attributes['aria-label'],'引导');
+  receive({action:'promptState',payload:{busy:false}});
+  assert.equal(get('sendBtn').attributes['aria-label'],'发送');
+});
+test('steer acknowledgement preserves a newer draft and new attachments', () => {
+  const {get,receive}=setup();
+  receive({action:'attachment',payload:{id:'old',name:'a'}});
+  receive({action:'attachment',payload:{id:'new',name:'b'}});
+  get('composerInput').value='new draft';
+  receive({action:'promptAccepted',payload:{text:'old draft',attachments:['old']}});
+  assert.equal(get('composerInput').value,'new draft');
+  assert.equal(get('attachmentList').children.length,1);
 });

@@ -190,6 +190,7 @@ struct WebUIView: UIViewRepresentable {
 
             case "getMessages":
                 reply(["action": "messages", "payload": model.transcriptForUI()])
+                model.pushPromptState()
 
             case "getAppearance":
                 reply(["action": "appearance", "payload": [
@@ -245,6 +246,8 @@ struct WebUIView: UIViewRepresentable {
 
             case "selectThread":
                 model.selectThread(payload?["id"] as? String)
+
+            case "interruptPrompt": model.interruptPrompt()
 
             case "prompt":
                 if let text = payload?["text"] as? String {

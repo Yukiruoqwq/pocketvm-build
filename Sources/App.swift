@@ -110,6 +110,10 @@ final class VMModel: ObservableObject {
         } catch { conversationNotice("照片导入失败：\(error.localizedDescription)") }
     }
 
+    private var activeTurnID: String?
+    private var interruptRequested = false
+    private var interruptInFlight = false
+    private var steerInFlight = false
     private var promptInFlight = false
     private var selectedThreadID: String?
     /// Set once the guest's own OS has been heard from, which is what makes
@@ -434,8 +438,12 @@ final class VMModel: ObservableObject {
             transcript.append(["role": "error", "text": text]); pushMessages()
         }
     }
+    func pushPromptState() {
+        pushToWeb?(["action": "promptState", "payload": ["busy": promptInFlight]])
+    }
     private func finishPrompt() {
         promptInFlight = false
+        activeTurnID = nil; interruptRequested = false; interruptInFlight = false
         pushToWeb?(["action": "promptState", "payload": ["busy": false]])
     }
     private func conversationError(_ text: String) { finishPrompt(); conversationNotice(text) }
@@ -446,11 +454,14 @@ final class VMModel: ObservableObject {
         guard !text.isEmpty || !attachments.isEmpty else { return }
         guard isRunning, codexReady else { conversationError("Codex 未连接，消息未发送"); return }
         guard attachments.isEmpty || sharedReady else { conversationNotice("共享目录尚未就绪，附件未发送"); return }
-        guard !promptInFlight else { conversationNotice("上一条消息仍在处理中"); return }
+        if promptInFlight {
+            steerPrompt(text, attachments: attachments, attachmentIDs: attachmentIDs)
+            return
+        }
         promptInFlight = true
         pushToWeb?(["action": "promptState", "payload": ["busy": true]])
         transcript.append(["role": "user", "text": ([text] + attachments.map { $0.path }).joined(separator: "\n")]); pushMessages()
-        pushToWeb?(["action": "promptAccepted", "payload": [:]])
+        pushToWeb?(["action": "promptAccepted", "payload": ["text": text, "attachments": attachmentIDs]])
         let send: (String) -> Void = { [weak self] id in
             guard let self else { return }
             let selection = self.storedModelSelection()
@@ -464,8 +475,12 @@ final class VMModel: ObservableObject {
             if let effort = selection.effort { params["effort"] = effort }
             if selection.fast { params["serviceTier"] = "fast" }
             self.rpc("turn/start", params) { [weak self] result in
-                if let turn = result["turn"] as? [String: Any], turn["status"] as? String == "failed" {
-                    self?.conversationError((turn["error"] as? [String: Any])?["message"] as? String ?? "回合失败")
+                guard let self, let turn = result["turn"] as? [String: Any] else { return }
+                if turn["status"] as? String == "failed" {
+                    self.conversationError((turn["error"] as? [String: Any])?["message"] as? String ?? "回合失败")
+                } else if self.promptInFlight, turn["status"] as? String == "inProgress" {
+                    self.activeTurnID = turn["id"] as? String
+                    if self.interruptRequested { self.interruptPrompt() }
                 }
             }
         }
@@ -477,6 +492,44 @@ final class VMModel: ObservableObject {
             }
         }
     }
+    func interruptPrompt() {
+        guard promptInFlight else { return }
+        interruptRequested = true
+        guard let thread = selectedThreadID, let turn = activeTurnID, !interruptInFlight else { return }
+        interruptInFlight = true
+        provisioner.channel.request("turn/interrupt", ["threadId": thread, "turnId": turn]) { [weak self] message in
+            guard let self else { return }
+            self.interruptInFlight = false
+            if let error = message["error"] as? [String: Any] {
+                self.interruptRequested = false
+                self.conversationNotice(error["message"] as? String ?? "中断失败")
+            }
+            // Only turn/completed or a lost connection ends the running state.
+        }
+    }
+
+    private func steerPrompt(_ text: String, attachments: [(path: String, image: Bool)], attachmentIDs: [String]) {
+        guard let thread = selectedThreadID, let turn = activeTurnID else { conversationNotice("回合正在启动，请稍后引导"); return }
+        guard !steerInFlight else { return }
+        steerInFlight = true
+        var input: [[String: Any]] = [["type": "text", "text": text.isEmpty ? "请查看附件" : text, "text_elements": []]]
+        for attachment in attachments {
+            input.append(attachment.image ? ["type": "localImage", "path": attachment.path] : ["type": "text", "text": "Attached file: " + attachment.path, "text_elements": []])
+        }
+        provisioner.channel.request("turn/steer", ["threadId": thread, "expectedTurnId": turn, "input": input]) { [weak self] message in
+            guard let self else { return }
+            self.steerInFlight = false
+            guard self.selectedThreadID == thread else { return }
+            if let error = message["error"] as? [String: Any] {
+                self.conversationNotice(error["message"] as? String ?? "引导失败"); return
+            }
+            guard message["result"] != nil else { self.conversationNotice("引导响应无效"); return }
+            self.transcript.append(["role": "user", "text": ([text] + attachments.map { $0.path }).joined(separator: "\n")])
+            self.pushMessages()
+            self.pushToWeb?(["action": "promptAccepted", "payload": ["text": text, "attachments": attachmentIDs]])
+        }
+    }
+
     func selectThread(_ id: String?) {
         guard !promptInFlight else { appendStatus("请等待当前回复完成"); return }
         selectedThreadID = id; transcript = []; messageIndices = [:]; pushMessages()
@@ -504,6 +557,12 @@ final class VMModel: ObservableObject {
         if method == "account/login/completed" { auth.completed(params); refreshCodexStatus(); return }
         if method == "account/updated" { refreshCodexStatus(); return }
         guard params["threadId"] as? String == selectedThreadID else { return }
+        if method == "turn/started", let turn = params["turn"] as? [String: Any] {
+            activeTurnID = turn["id"] as? String
+            promptInFlight = true
+            pushToWeb?(["action": "promptState", "payload": ["busy": true]])
+            if interruptRequested { interruptPrompt() }
+        }
         if method == "error" {
             let error = params["error"] as? [String: Any] ?? [:]
             let reason = error["message"] as? String ?? "请求失败"

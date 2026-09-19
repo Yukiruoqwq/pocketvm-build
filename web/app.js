@@ -1,3 +1,4 @@
+let promptBusy = false;
 let pendingAttachments = [];
 // Frontend for PocketVM.
 //
@@ -277,7 +278,7 @@ function renderMessages() {
   box.innerHTML = "";
   // The app's new-thread page is the composer centred in the middle of the
   // window; it moves to the bottom once the thread has anything in it.
-  document.querySelector(".conversation").classList.toggle("is-home", state.messages.length === 0);
+  document.querySelector(".conversation").classList.remove("is-home");
   const column = document.createElement("div");
   column.className = "thread-column";
   for (const message of state.messages) {
@@ -1168,9 +1169,11 @@ window.pocketvmReceive = function (message) {
     case "attachment":
       pendingAttachments.push(payload); renderAttachments(); break;
     case "promptAccepted":
-      pendingAttachments = []; renderAttachments();
-      $("composerInput").value = ""; break;
+      pendingAttachments = pendingAttachments.filter(item => !(payload.attachments ?? []).includes(item.id));
+      if ($("composerInput").value.trim() === payload.text) $("composerInput").value = "";
+      renderAttachments(); resizeComposer(); updateSendButton(); break;
     case "promptState":
+      promptBusy = payload.busy === true; updateSendButton();
       $("composerInput").setAttribute("aria-busy", payload.busy ? "true" : "false");
       document.getElementById("replyState").hidden = !payload.busy;
       break;
@@ -1214,6 +1217,7 @@ window.pocketvmReceive = function (message) {
 };
 
 function renderAttachments() {
+  updateSendButton();
   const row = $("attachmentList"); row.replaceChildren();
   for (const item of pendingAttachments) {
     const button = el("button", "attachment-chip", item.name + " ×");
@@ -1223,28 +1227,41 @@ function renderAttachments() {
   }
 }
 
+function composerAction() {
+  const hasInput = !!$("composerInput").value.trim() || pendingAttachments.length > 0;
+  return promptBusy ? (hasInput ? "steer" : "interrupt") : "send";
+}
+function updateSendButton() {
+  const button = $("sendBtn"), action = composerAction();
+  const label = {send: "发送", steer: "引导", interrupt: "中断"}[action];
+  button.title = label; button.setAttribute("aria-label", label); button.dataset.action = action;
+  button.innerHTML = action === "interrupt"
+    ? '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="4" y="4" width="8" height="8" rx="1" fill="currentColor"/></svg>'
+    : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 12.4V3.6M4.4 7.2L8 3.6l3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+}
+function resizeComposer() {
+  const input = $("composerInput");
+  input.style.height = "auto";
+  input.style.height = `${Math.max(46, Math.min(input.scrollHeight, 180))}px`;
+}
+function submitComposer() {
+  const action = composerAction();
+  if (action === "interrupt") { bridge.send("interruptPrompt"); return; }
+  const text = $("composerInput").value.trim();
+  if (!text && !pendingAttachments.length) return;
+  bridge.send("prompt", {text, attachments: pendingAttachments.map(item => item.id)});
+}
 function wireComposer() {
   const input = $("composerInput");
-  const send = $("sendBtn");
-
-  const autosize = () => {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 180)}px`;
-  };
-  input.addEventListener("input", autosize);
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+  input.addEventListener("input", () => { resizeComposer(); updateSendButton(); });
+  input.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      submit();
+      if (composerAction() !== "interrupt") submitComposer();
     }
   });
-  send.addEventListener("click", submit);
-
-  function submit() {
-    const text = input.value.trim();
-    if (!text && !pendingAttachments.length) return;
-    bridge.send("prompt", { text, attachments: pendingAttachments.map(item => item.id) });
-  }
+  $("sendBtn").addEventListener("click", submitComposer);
+  updateSendButton();
 }
 
 function wireChrome() {
@@ -1652,6 +1669,7 @@ function main() {
     state.provision.executionMode = "interpreter";
     renderGate();
   }
+  if (preview && params.has("busy")) window.pocketvmReceive({action: "promptState", payload: {busy: true}});
   const theme = params.get("theme");
   if (theme === "light" || theme === "dark") {
     forcedTheme = theme;
