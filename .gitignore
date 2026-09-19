@@ -1,0 +1,26 @@
+# Build products and inputs that are produced locally.
+Dependencies/
+build-extract/
+package/
+sysroot-iOS-arm64/
+PocketVM.xcodeproj/
+PocketVM.xcarchive/
+*.ipa
+*.log
+SHA256SUMS
+
+# Reference material extracted from the desktop app for design comparison. It
+# belongs to somebody else and must not end up in a published snapshot.
+reference/
+
+# Device data, credentials and local diagnostics.
+work/
+outputs/
+.env
+.env.*
+*.p12
+*.mobileprovision
+provision.json
+proxy.txt
+auth.json
+*.qcow2

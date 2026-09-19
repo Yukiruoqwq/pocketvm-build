@@ -1,188 +1,80 @@
 # PocketVM
 
-An independent iOS app that runs a QEMU virtual machine. Built for the M4 iPad
-so that a future frontend can drive the VM configuration, with no dependency on
-the UTM app.
+在 iOS / iPadOS 上运行 Debian ARM64 虚拟机，并通过 Codex CLI 的 app-server 协议提供对话界面。独立项目，与 OpenAI 和 UTM 无隶属关系。
 
-## Why this exists
+源码：https://github.com/abasbdjasdl/pocketvm-build
 
-UTM proved the platform limits on this device: no hardware virtualization
-(`com.apple.private.hypervisor` is Apple-private), no JIT entitlement, and no
-app-group entitlement on a sideloaded build. We measured all three. What is
-left is a software-emulated ARM64 guest, which is slow for a desktop but
-adequate for a headless Linux environment driven by an agent.
+## 功能
 
-The goal here is not to recreate UTM. It is a small app whose entire job is:
+- QEMU 虚拟机，支持 JIT 和无 JIT 的 TCI 解释模式。
+- 下载并校验 Debian 镜像，自动安装 Node.js 和 Codex CLI。
+- Codex 设备码登录、账户模型列表、历史对话、流式回复。
+- 回复中的中断和引导使用 `turn/interrupt`、`turn/steer` 协议。
+- 可调整的串口终端面板。
+- 系统照片与文件选择器，附件导入和共享目录。
+- 设置中可启用开发 SSH，默认关闭，仅监听本机回环地址。
 
-1. Select the native translator when JIT is available, otherwise the TCI interpreter.
-2. Run a QEMU system emulator in-process.
-3. Describe the VM in a plain, versioned config file.
-4. Expose the console.
+## 当前状态
 
-Step 3 is the interface the frontend will use later: edit the config, restart
-the VM, the change takes effect.
+这是仍在开发的实验项目。已经在 iPad Pro M4 / iPadOS 18.7.2 上验证过启动、登录和部分协议流程；其他设备尚未验证。工程目前的 `TARGETED_DEVICE_FAMILY` 为 iPad，iPhone 界面和安装支持仍需适配。无 JIT 模式明显较慢。
 
-## Dependency on UTM's source
+照片导入、共享目录以及真实回合中的中断与引导仍需更多实机验证。模型及额度取决于登录账户的服务端返回；`gpt-reserve` 出现在模型目录中不代表账户有备用额度。定时任务界面尚未接入真正的调度器。
 
-Upstream QEMU does not build for iOS. We use the `utmapp/qemu` fork, which adds
-the shared-library build and the iOS patches, together with UTM's dependency
-build script for the sysroot. Both are GPLv3. This app is therefore GPLv3 and
-stays that way.
+## 安装与构建
 
-That is a dependency on UTM's *sources*, not on the UTM app. Nothing here needs
-UTM installed, and the VM format, config, and UI are ours.
+1. 在 [GitHub Actions](https://github.com/abasbdjasdl/pocketvm-build/actions/workflows/build.yml) 选择成功的构建。
+2. 下载 `PocketVM-build` artifact，解压得到未签名的 `PocketVM.ipa` 和 `SHA256SUMS`。
+3. 校验 SHA-256，用自己的签名工具安装。仓库不包含签名证书。
+4. 首次启动需要网络下载系统并安装依赖。登录 Codex 需要自己的账户。
 
-## Integration contract
+开发构建可 Fork 此仓库，然后在 Actions 中运行 **Build PocketVM**。默认使用工作流中固定的 QEMU 运行时资源；可选择从 UTM 源码重新构建。需要 macOS / Xcode 才能构建 iOS 应用。
 
-QEMU is loaded as a dynamic library, exactly as the fork is built to allow:
+本地构建入口：`scripts/build_local.sh`。运行时来源和版本见 `.github/workflows/build.yml`、`NOTICE.md`。
 
-| Item | Value |
-| --- | --- |
-| Library | `Frameworks/qemu-aarch64-softmmu.framework/qemu-aarch64-softmmu` |
-| Entry points | `qemu_init`, `qemu_main_loop`, `qemu_cleanup` |
-| Firmware | `qemu/edk2-aarch64-code.fd`, `qemu/edk2-aarch64-vars.fd` |
-| Install names | rewritten to `@rpath/<name>.framework/<name>` |
+## 共享目录
 
-The library is `dlopen`ed and the loop runs on a dedicated thread, because
-`qemu_main_loop` does not return until the guest shuts down.
+- 宿主 App：`Documents/Shared`
+- Linux 客户机：`/home/codex/Shared`
 
-## Milestones
+共享目录通过本机 HTTP 服务与客户机 FUSE 挂载提供实时读写。支持普通文件与目录，不支持符号链接和 Unix 权限修改；软件包、Git 仓库和虚拟环境应放在客户机的其他目录。安装脚本自动维护 `/home/codex/AGENTS.md` 中的英文环境说明，保留已有的其他内容。
 
-**M1 - headless serial console.** The app starts, confirms JIT, loads the QEMU
-library, boots the Debian guest with `-display none`, and presents the guest
-console. No graphics. This is the whole product for the agent use case, and it
-is the milestone being built now.
+## 开发 SSH
 
-**M2 - configuration.** The config file becomes editable, and a restart applies
-it: CPU count, memory, JIT cache size, added drives, port forwards. This is what
-the future frontend drives.
+在设置中启用 SSH，保存后重启虚拟机。默认转发宿主回环端口 `2222` 到客户机 `22`。用户名 `codex`，密码在设置中查看。
 
-**M3 - graphics.** virtio-gpu plus a Metal renderer, only if a graphical guest
-still looks worth having after M1 and M2 are in real use.
-
-## Configuration format
-
-`Documents/pocketvm.json`. Versioned, so the frontend can migrate it. Written
-by hand or by the frontend; read at VM start.
-
-```json
-{
-  "version": 1,
-  "name": "Debian",
-  "cpuCount": 4,
-  "memoryMiB": 4096,
-  "jitCacheMiB": 512,
-  "forceMulticore": true,
-  "boot": { "mode": "uefi" },
-  "drives": [
-    { "path": "efi_vars.fd", "interface": "pflash", "readOnly": false },
-    { "path": "debian.qcow2", "interface": "virtio", "readOnly": false }
-  ],
-  "network": { "enabled": true, "portForwards": [] }
-}
-```
-
-Drive paths are relative to `Documents/`.
-
-## Developer SSH
-
-Settings → Virtual machine → Developer → SSH enables a loopback-only port
-forward, default `2222`, to guest port `22`. Save and restart the VM.
-The guest user is `codex`; its password is shown in the same settings page.
-Use USB forwarding on the computer, then connect through that local port:
+电脑可通过 USB 转发连接：
 
 ```sh
-python -m pymobiledevice3 usbmux forward 2222 2222
-# In a second terminal:
-ssh -p 2222 codex@127.0.0.1
+python -m pymobiledevice3 usbmux forward 22222 2222 --host 127.0.0.1
+# 另一个终端
+ssh -p 22222 codex@127.0.0.1
 ```
 
-No LAN listener is opened. The switch is off in existing and new configurations
-until explicitly enabled. The port is restricted to 1024–65535; 8474 is reserved.
+不要把设备的 `provision.json`、`proxy.txt`、Codex 登录文件、磁盘镜像或个人附件提交到仓库。
 
-## No-JIT mode
-
-Installation and boot select a backend using the process code-signing flags.
-Without JIT, the app loads UTM SE's TCI runtime with single-thread translation
-and no executable code cache. Both backends are embedded; the selection does
-not depend on terminal output. The yellow status remains visible throughout
-the web interface while interpreter mode is selected.
-
-## JIT
-
-QEMU's translator needs writable, executable memory, which iOS refuses without
-the `dynamic-codesigning` entitlement. A sideloaded build cannot carry it, so
-the app relies on a debugger being attached: `csops` reports `CS_DEBUGGED` and
-the kernel then permits the allocation. StikDebug provides that attach.
-
-The app checks the flag and refuses to start the VM without it, because running
-an emulator that cannot translate is worse than refusing: it produces
-misleading failures.
-
-## Provisioning
-
-The app ships no disk image. On first start it:
-
-1. downloads Debian's aarch64 cloud image (~320 MB) and checks the published
-   SHA-512 before using it;
-2. starts a small HTTP server on loopback and points cloud-init at it with
-   `-smbios type=1,serial=ds=nocloud-net;s=http://10.0.2.2:PORT/` — QEMU's
-   user-mode networking makes `10.0.2.2` the host, so the guest fetches its seed
-   with no port forwarding;
-3. grows the qcow2 to the configured size through the emulator's monitor before
-   the guest reads its partition table;
-4. boots once, with cloud-init setting up an account, a serial console that
-   logs in by itself, and a script that installs Node and the Codex CLI, then
-   reports progress on the serial line the app is already reading.
-
-Boot two and later are a plain boot of the same disk. The seed arguments stay in
-the boot profile all the same, so a failed first boot can be retried without a
-second code path.
-
-## Signing in to Codex
-
-The guest is headless, so the CLI's device-code flow is the only one that fits.
-The app sends `pocketvm-auth start` over the serial console, reads the URL and
-the one-time code out of the guest's output, and shows them in the frontend with
-a button that hands the URL to Safari. Polling is done by the same script, which
-prints one fixed status line per poll — the app never has to interpret a TUI.
-
-## Building
-
-GitHub Actions, macOS runner, driven from the public mirror of this repository
-(`scripts/publish_build_repo.ps1`). The QEMU runtime is fetched from a release
-asset built out of UTM's own dependency build, so an app-only change builds in
-minutes instead of rebuilding the emulator.
-
-The mirror is public because GitHub does not bill standard runners for public
-repositories and bills macOS runners at ten times the normal rate for private
-ones. It carries no history and only the directories the build reads, so the
-reference material this repository keeps for design comparison never lands in
-it.
-
-The mirror is disposable and has been deleted once already. To rebuild it:
-
-```powershell
-gh repo create <owner>/pocketvm-build --public
-powershell -File scripts/publish_build_repo.ps1 -Remote https://github.com/<owner>/pocketvm-build.git
-gh release create runtime-1 ..\pocketvm-runtime-ios-arm64.tar.gz --repo <owner>/pocketvm-build
-```
-
-`pocketvm-runtime-ios-arm64.tar.gz` is the aarch64 runtime this repository's own
-`scripts/slim_runtime.mjs` produced from UTM's iOS dependency build; keep a copy
-outside the repository (it is 17 MB, and the workflow's `RUNTIME_URL` expects it
-as a release asset).
-
-Locally, on a Mac with Xcode:
+## 开发与测试
 
 ```sh
-node scripts/slim_runtime.mjs /path/to/UTM.app            # or use POCKETVM_SYSROOT
-bash scripts/build_local.sh path/to/UTM.ipa
+node --test scripts/test-app-server.mjs scripts/test-terminal-replay.cjs scripts/test-boot-services.mjs scripts/test-frontend.cjs scripts/test-repair.cjs
+node --check web/app.js
+for script in guest/*.sh; do bash -n "$script"; done
 ```
 
-## Status
+Swift 的协议、登录、共享目录和运行配置测试在 GitHub Actions 中执行。浏览器预览：
 
-The first boot, the serial console and the guest provisioning have all run on
-the device: cloud-init sets the guest up, the host reads the same console the
-terminal shows, and `provision.json` ends up marked complete. `docs/ON-DEVICE.md`
-is the checklist, including what the gate is waiting for on every later boot.
+```sh
+python -m http.server 4173 --directory web
+```
+
+打开 `http://127.0.0.1:4173/?entered=1`。浏览器中的模型数据是预览样例，不代表设备账户的实际权限。
+
+## 结构
+
+- `Sources/`：SwiftUI、WebKit 桥接、QEMU 宿主、协议通道。
+- `guest/`：安装、启动、代理、共享目录和 Codex relay。
+- `web/`：对话、设置和终端界面。
+- `scripts/`：构建工具与回归测试。
+
+## 许可证
+
+项目自身代码采用 **GPL-3.0-or-later**，见 [LICENSE](LICENSE)。第三方组件仍遵循各自许可证，来源见 [NOTICE.md](NOTICE.md)。本项目不授予 OpenAI、Codex 或 UTM 的商标权利。

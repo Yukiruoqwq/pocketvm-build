@@ -27,7 +27,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 if (-not $Worktree) { $Worktree = Join-Path (Split-Path -Parent $RepoRoot) "pocketvm-build" }
 
 # Everything the build reads, and nothing else.
-$Include = @("Sources", "web", "guest", "scripts", "project.yml", ".github", "LICENSE", "NOTICE.md", "README.md")
+$Include = @("Sources", "web", "guest", "scripts", "project.yml", ".github", ".gitignore", "LICENSE", "NOTICE.md", "README.md")
 
 if (-not (Test-Path (Join-Path $Worktree ".git"))) {
     Write-Host "Cloning $Remote into $Worktree"

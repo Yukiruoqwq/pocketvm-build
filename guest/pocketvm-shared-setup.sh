@@ -16,10 +16,10 @@ start, end = '<!-- pocketvm-environment -->', '<!-- /pocketvm-environment -->'
 text = p.read_text() if p.exists() else ''
 section = """<!-- pocketvm-environment -->
 ## Runtime environment
-You are running inside a Debian ARM64 virtual machine in PocketVM on an iPad.
-The guest filesystem is separate from the iPad filesystem.
+You are running inside a Debian ARM64 virtual machine in PocketVM on an iOS device.
+The guest filesystem is separate from the host iOS filesystem.
 The fixed shared directory is `/home/codex/Shared`, backed live by the app's
-`Documents/Shared` directory on the iPad. Imported photos and files are placed
+`Documents/Shared` directory on the host iOS device. Imported photos and files are placed
 there. Save files intended for the user there as well. Do not delete or replace
 this mount point. It supports regular files and directories, not symlinks or
 Unix permission changes. Keep repositories, virtual environments and package
