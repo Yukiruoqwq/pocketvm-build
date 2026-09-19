@@ -1242,7 +1242,7 @@ function updateSendButton() {
 function resizeComposer() {
   const input = $("composerInput");
   input.style.height = "auto";
-  input.style.height = `${Math.max(46, Math.min(input.scrollHeight, 180))}px`;
+  input.style.height = `${Math.max(48, Math.min(input.scrollHeight + 2, 180))}px`;
 }
 function submitComposer() {
   const action = composerAction();

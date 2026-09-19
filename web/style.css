@@ -890,7 +890,7 @@ body.entered .app { animation: vm-settle .45s ease; }
 
 .composer { flex: 0 0 auto; min-width: 0; width: 100%; box-sizing: border-box; }
 .composer-column { min-width: 0; }
-.composer textarea { display: block; box-sizing: border-box; min-width: 0; min-height: 46px; font: inherit; line-height: 22px; }
+.composer textarea { display: block; box-sizing: border-box; min-width: 0; min-height: 48px; font: inherit; line-height: 22px; }
 .composer-bar { flex-wrap: wrap; }
 .composer-right { min-width: 0; max-width: 100%; }
 .composer-right .chip { white-space: nowrap; }
